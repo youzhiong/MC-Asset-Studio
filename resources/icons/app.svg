@@ -1,0 +1,56 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" shape-rendering="geometricPrecision">
+  <title>MC Studio</title>
+  <desc>Isometric grass block with a thick black silhouette and a solid blue chisel.</desc>
+
+  <g id="block">
+    <!-- Dirt sides -->
+    <polygon points="86.3,158 256,256 256,452 86.3,354" fill="#A36A3A"/>
+    <polygon points="256,256 425.7,158 425.7,354 256,452" fill="#7C4A28"/>
+
+    <!-- Flat dirt patches -->
+    <ellipse cx="158" cy="300" rx="22" ry="12" fill="#8B5731" transform="rotate(30 158 300)"/>
+    <ellipse cx="198" cy="358" rx="14" ry="8" fill="#BB804E" transform="rotate(30 198 358)"/>
+    <ellipse cx="126" cy="352" rx="11" ry="7" fill="#8B5731" transform="rotate(30 126 352)"/>
+    <ellipse cx="347" cy="296" rx="21" ry="11" fill="#603A20" transform="rotate(-30 347 296)"/>
+    <ellipse cx="307" cy="356" rx="13" ry="8" fill="#95613A" transform="rotate(-30 307 356)"/>
+    <ellipse cx="382" cy="340" rx="11" ry="7" fill="#603A20" transform="rotate(-30 382 340)"/>
+
+    <!-- Grass top -->
+    <polygon points="256,60 425.7,158 256,256 86.3,158" fill="#58C85A"/>
+
+    <!-- Grass overhanging the left face -->
+    <path d="M86.3 158
+             L256 256
+             L256 282
+             C240 278 232 290 216 280
+             C200 270 188 286 172 276
+             C156 266 144 282 128 272
+             C112 262 100 270 86.3 212
+             Z"
+          fill="#57C455"/>
+
+    <!-- Grass overhanging the right face -->
+    <path d="M256 256
+             L425.7 158
+             L425.7 188
+             C412 196 402 180 386 190
+             C370 200 358 184 342 194
+             C326 204 312 188 296 198
+             C282 204 266 210 256 220
+             Z"
+          fill="#4FB44D"/>
+
+    <!-- Thick black silhouette, no inner edge lines -->
+    <polygon points="256,60 425.7,158 425.7,354 256,452 86.3,354 86.3,158"
+             fill="none" stroke="#101010" stroke-width="16" stroke-linejoin="round"/>
+  </g>
+
+  <!-- Solid blue chisel: one fill, no facets or outline -->
+  <path d="M350.8 57
+           L409.3 83
+           L284.5 364
+           L220 430
+           L226 338
+           Z"
+        fill="#5A63E0" stroke="#5A63E0" stroke-width="8" stroke-linejoin="round"/>
+</svg>
