@@ -1,0 +1,45 @@
+# Build output
+build/
+dist/
+out/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.sln
+*.vcxproj
+*.vcxproj.filters
+
+# Runtime data
+data/
+**/data/
+
+# Compiled artifacts
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.exp
+*.lib
+*.dll
+*.exe
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+CMakeUserPresets.json
+*.user
+*.user.*
+
+# Logs / temp
+*.log
+*.tmp
+*.bak
+*.zip
+*.7z
+__pycache__/
+*.pyc
+
+# Windows
+Thumbs.db
+desktop.ini
