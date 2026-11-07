@@ -1,8 +1,8 @@
 # MC Asset Studio
 
-Minecraft Java Edition 资源包工作台，使用 C++20 + Qt 6 Widgets 构建，面向 Windows 10/11 x64。
+本项目是一个面向 Windows 10/11 x64 的 Minecraft Java Edition 资源包工作台，采用 C++20 与 Qt 6 Widgets 构建。
 
-它是一个**非官方**的社区工具，用于浏览、编辑和导出 Minecraft Java 资源包：
+本项目为非官方社区工具，主要用于浏览、编辑和导出 Minecraft Java 资源包：
 
 - 扫描多个 `.minecraft` 根目录和版本隔离实例；
 - 识别 Forge / NeoForge / Fabric / Quilt 模组，并按命名空间归类材质；
@@ -11,8 +11,22 @@ Minecraft Java Edition 资源包工作台，使用 C++20 + Qt 6 Widgets 构建�
 - 材质墙、集合模式、检查器、主题和 Windows 11 原生控件样式；
 - 导出 ZIP 或覆盖原资源包，不修改参考资源。
 
-> 本项目与 Mojang Studios 或 Microsoft 没有隶属关系。Minecraft 是 Mojang Synergies AB 的商标。详见下方“免责声明”。
+> 本项目与 Mojang Studios 或 Microsoft 没有隶属关系。Minecraft 是 Mojang Synergies AB 的商标。请参阅下方“免责声明”。
+
+> [!IMPORTANT]
+> **AI 辅助开发声明**
+>
+> 本项目采用 **AI Coding（AI 辅助编程）** 方式开发，主要使用 **DeepSeek** 系列模型辅助完成代码编写、重构、文档撰写与问题排查。所有 AI 生成或修改的内容均经过维护者的人工审查、修改、构建验证和必要测试；维护者对最终代码、文档及发布内容负责。详见下文“开发方式与 AI 辅助声明”。
+
 ![MC Asset Studio icon](resources/icons/app.png)
+
+## 开发方式与 AI 辅助声明
+
+本项目采用 **AI Coding（AI 辅助编程）** 方式进行开发。开发过程中主要使用 **DeepSeek** 系列模型作为编程助手，用于代码草拟、重构建议、文档撰写、问题定位与测试辅助。
+
+AI 工具仅作为开发辅助手段。所有由 AI 生成或修改的内容均经过维护者的人工审查、修改、构建验证与必要的运行测试；维护者对最终代码、文档及发布内容承担责任。
+
+使用 AI 辅助工具不影响本项目源代码的 MIT 许可证，也不改变第三方组件（包括 Qt）的授权条件。DeepSeek 是其权利人的商标，此处仅用于客观说明开发工具。
 
 ## 功能
 
