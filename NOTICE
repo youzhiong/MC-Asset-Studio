@@ -1,0 +1,47 @@
+MC Asset Studio
+Copyright (c) 2026 youzhiong
+
+This product includes software developed by The Qt Company Ltd. and other
+contributors.
+
+Qt 6.12.0
+---------
+Qt is licensed under the GNU Lesser General Public License version 3
+(LGPL-3.0). See LICENSES/LGPL-3.0-only.txt and LICENSES/GPL-3.0-only.txt.
+
+The application dynamically links against Qt Core, Qt Gui and Qt Widgets.
+When distributing binaries, keep the Qt DLLs replaceable, include this NOTICE
+and the license texts, and provide the corresponding Qt source or a valid
+written offer as required by LGPL-3.0.
+
+Qt source code: https://download.qt.io/
+Qt licensing:  https://www.qt.io/licensing/open-source-lgpl-obligations
+
+The application also uses Qt private Core APIs (QZipReader/QZipWriter).
+These are covered by the same Qt license but are not part of Qt's stable
+public API.
+
+Verify the actual Qt license before publishing binary releases. If you use a
+GPL-licensed Qt build, the combined work must be distributed under GPL-3.0. If
+you use a commercial Qt license, follow the applicable commercial agreement.
+
+Minecraft
+---------
+MC Asset Studio is an unofficial community project.
+
+Not an official Minecraft product. Not approved by or associated with
+Mojang Studios or Microsoft. Minecraft is a trademark of Mojang Synergies AB.
+
+No Minecraft client jars, mod jars, resource packs, or game assets are included
+in this repository. The application only reads files from installations selected
+by the user. Minecraft, mod, and resource-pack assets remain the property of
+their respective owners.
+
+The application icon is original project artwork inspired by the general idea
+of a grass block. It is not an official Mojang asset.
+
+Images and screenshots
+----------------------
+No Minecraft/mod screenshots are included in the public source tree. Any future
+screenshots containing third-party game or mod textures must be documented
+separately and are not licensed under the MIT License.
