@@ -123,7 +123,8 @@ QString descriptionFromJson(const QJsonValue &value)
 
 } // namespace
 
-ImportResult ZipImporter::import(const QString &zipPath, const QString &dataRoot,
+ImportResult ZipImporter::import(const QString &zipPath, const QString &projectsRoot,
+                                 const QString &cacheRoot,
                                  const Progress &progress)
 {
     ImportResult result;
@@ -153,13 +154,12 @@ ImportResult ZipImporter::import(const QString &zipPath, const QString &dataRoot
     idHash.addData(zipInfo.canonicalFilePath().toUtf8());
     result.projectId = QString::fromLatin1(idHash.result().toHex().left(16));
 
-    result.projectDir = QDir(dataRoot).filePath(
-        QStringLiteral("projects/%1").arg(result.projectId));
+    result.projectDir = QDir(projectsRoot).filePath(result.projectId);
     const QString projectFile = QDir(result.projectDir).filePath(QStringLiteral("project.json"));
     const QString sourceDir = QDir(result.projectDir).filePath(QStringLiteral("source"));
     const QString packDir = QDir(result.projectDir).filePath(QStringLiteral("pack"));
-    result.cacheManifestPath = QDir(dataRoot).filePath(
-        QStringLiteral("cache/sources/%1.json").arg(sha1));
+    result.cacheManifestPath = QDir(cacheRoot).filePath(
+        QStringLiteral("sources/%1.json").arg(sha1));
 
     // The source manifest is the only persistent cache (2A). If it is valid,
     // reuse the existing working copy instead of extracting the ZIP again.

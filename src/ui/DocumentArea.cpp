@@ -126,6 +126,24 @@ void DocumentArea::removeDocument(const QString &key)
     rebuildIndex();
 }
 
+QWidget *DocumentArea::takeDocument(const QString &key)
+{
+    if (key == kBrowserKey)
+        return nullptr;
+    const int index = m_indexByKey.value(key, -1);
+    if (index < 0 || index >= count())
+        return nullptr;
+
+    QWidget *page = widget(index);
+    removeTab(index);
+    if (page)
+        page->setParent(nullptr);
+    m_fixedKeys.remove(key);
+    m_indexByKey.remove(key);
+    rebuildIndex();
+    return page;
+}
+
 void DocumentArea::setDocumentTitle(const QString &key, const QString &title)
 {
     const int index = m_indexByKey.value(key, -1);

@@ -6,6 +6,7 @@ function Get-MCStudioQtRoot {
     $candidates = @()
     if ($env:QTDIR) { $candidates += $env:QTDIR }
     $candidates += @(
+        'D:\qit\Qt',
         'C:\Qt\6.12.0\msvc2022_64',
         'C:\Qt\6.9.0\msvc2022_64'
     )
@@ -16,7 +17,7 @@ function Get-MCStudioQtRoot {
         }
     }
 
-    throw 'Qt 6 MSVC x64 not found. Set QTDIR to the Qt prefix, for example C:\Qt\6.12.0\msvc2022_64.'
+    throw 'Qt 6 MSVC x64 not found. Set QTDIR to the Qt prefix, for example D:\qit\Qt.'
 }
 
 function Get-MCStudioBuildDir {
@@ -32,15 +33,11 @@ function Invoke-MCStudioBuild {
 
     $qtRoot = Get-MCStudioQtRoot
     $buildDir = Get-MCStudioBuildDir
-    $generator = $env:MCSTUDIO_CMAKE_GENERATOR
-    if (-not $generator) {
-        $generator = 'Visual Studio 17 2022'
-    }
 
     $configure = @(
         '-S', $script:RepoRoot,
         '-B', $buildDir,
-        '-G', $generator,
+        '-G', 'Visual Studio 18 2026',
         '-A', 'x64',
         "-DCMAKE_PREFIX_PATH=$qtRoot"
     )

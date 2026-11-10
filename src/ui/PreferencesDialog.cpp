@@ -115,7 +115,10 @@ void PreferencesDialog::buildUi()
     footerLayout->setContentsMargins(18, 10, 18, 12);
     footerLayout->setSpacing(8);
 
-    auto *hint = new QLabel(tr("缓存位于程序目录 data/，不会写入资源包 ZIP。"));
+    auto *hint = new QLabel(
+        tr("设置和缓存位于 %1，项目位于 %2；不会写入资源包 ZIP。")
+            .arg(QDir::toNativeSeparators(AppPaths::dataRoot()),
+                 QDir::toNativeSeparators(AppPaths::projectsRoot())));
     hint->setObjectName(QStringLiteral("PanelHint"));
 
     m_buttons = new QDialogButtonBox(
@@ -391,10 +394,12 @@ QWidget *PreferencesDialog::createCachePage()
         tr("缓存内容：根目录、实例（MC 版本 / 加载器 / 客户端 JAR）、mod 列表、"
            "资源包列表、模组元数据（mods.toml / fabric.mod.json / mcmod.info）"
            "以及命名空间解析结果；jar 资源索引在后续阶段接入。\n\n"
-           "项目级 reference.json / association.json 位于 data/projects/<id>/，"
+           "项目级 reference.json / association.json 位于 %1 下的项目目录，"
            "用于记住参考实例和模型关联解析结果，同样不会写入资源包 ZIP。\n\n"
-           "安全约定：缓存只写入程序目录 data/，不会写入任何资源包 ZIP；"
-           "打包时 data/ 会被排除。清除缓存不会删除或修改 .minecraft 目录。"));
+           "安全约定：缓存只写入 %2，不会写入任何资源包 ZIP；"
+           "清除缓存不会删除项目或修改 .minecraft 目录。")
+            .arg(QDir::toNativeSeparators(AppPaths::projectsRoot()),
+                 QDir::toNativeSeparators(AppPaths::dataRoot())));
     detail->setObjectName(QStringLiteral("PanelHint"));
     detail->setWordWrap(true);
     layout->addWidget(detail);

@@ -8,6 +8,7 @@
 #include <QPoint>
 #include <QPointF>
 #include <QRect>
+#include <QVector>
 #include <QWidget>
 #include <functional>
 
@@ -25,6 +26,17 @@ public:
         Rect,
         Ellipse,
         Select,
+        Lasso,
+        MagicWand,
+    };
+
+    // How the texture is repeated around the editable tile. Edits always apply
+    // to the centre tile; every copy shows the same pixels live.
+    enum class TileMode {
+        None,
+        Both,
+        Horizontal,
+        Vertical,
     };
 
     explicit PixelCanvas(QWidget *parent = nullptr);
@@ -61,6 +73,30 @@ public:
     void setOnionSkin(bool enabled);
     bool onionSkin() const { return m_onionSkin; }
 
+    void setTileMode(TileMode mode);
+    TileMode tileMode() const { return m_tileMode; }
+
+    // Reference image overlay: display-only, never saved into the document.
+    void setReferenceImage(const QImage &image);
+    void clearReferenceImage();
+    bool hasReferenceImage() const { return !m_reference.isNull(); }
+    void setReferenceVisible(bool visible);
+    bool referenceVisible() const { return m_referenceVisible; }
+    void setReferenceOpacity(int percent);
+    int referenceOpacity() const { return m_referenceOpacity; }
+    void setReferenceLocked(bool locked);
+    bool referenceLocked() const { return m_referenceLocked; }
+    void setReferenceAbove(bool above);
+    bool referenceAbove() const { return m_referenceAbove; }
+    void setReferenceAdjustMode(bool adjust);
+    bool referenceAdjustMode() const { return m_referenceAdjust; }
+    void setReferencePickMode(bool pick);
+    bool referencePickMode() const { return m_referencePick; }
+    void fitReferenceToView();
+    void resetReferenceTransform();
+    int referenceScalePercent() const;
+    QString referenceSizeText() const;
+
     void setZoomPercent(int percent);
     int zoomPercent() const { return m_zoom * 100; }
     void zoomIn();
@@ -76,12 +112,23 @@ public:
     bool copySelectionToClipboard();
     bool pasteFromClipboard();
 
+    // Tint mask: a separate non-destructive selection used only by tint tools.
+    // White pixels are selected; it never enters undo/save.
+    bool hasTintMask() const { return !m_tintMask.isNull() && m_maskPixels > 0; }
+    QImage tintMask() const { return m_tintMask; }
+    int tintMaskPixels() const { return m_maskPixels; }
+    void setTintMask(const QImage &mask);
+    void clearTintMask();
+
     void refresh();
 
     std::function<void(QPoint, QColor)> onHover;
     std::function<void(QColor)> onColorPicked;
+    std::function<void(QColor)> onReferenceColorPicked;
+    std::function<void()> onReferenceChanged;
     std::function<void()> onEdited;
     std::function<void()> onSelectionChanged;
+    std::function<void()> onMaskChanged;
     std::function<void(int)> onZoomChanged;
 
 protected:
@@ -114,6 +161,17 @@ private:
     void drawShapePreview();
     void applyMovingSelection();
     void drawCheckerboard(QPainter &painter, const QRect &rect) const;
+    QRect tiledBounds() const;
+    void drawTiledCopies(QPainter &painter, const QRect &bounds, const QImage &image) const;
+    void drawReference(QPainter &painter) const;
+    bool referenceColorAt(const QPoint &position, QColor *color) const;
+    QPointF referenceCenter() const;
+    void beginTintMask();
+    void finishLassoMask();
+    void applyWandMask(const QPoint &pixel);
+    void rebuildMaskOverlay();
+    void paintMaskOverlay(QPainter &painter) const;
+    void paintLassoPreview(QPainter &painter) const;
 
     TextureDocument *m_document = nullptr;
     int m_frame = 0;
@@ -127,6 +185,21 @@ private:
     bool m_showGrid = false;
     PixelEdit::Symmetry m_symmetry = PixelEdit::Symmetry::None;
     bool m_onionSkin = false;
+    TileMode m_tileMode = TileMode::None;
+
+    QImage m_reference;
+    bool m_referenceVisible = false;
+    int m_referenceOpacity = 60;
+    bool m_referenceLocked = false;
+    bool m_referenceAbove = true;
+    bool m_referenceAdjust = false;
+    bool m_referencePick = false;
+    qreal m_referenceScale = 1.0;
+    qreal m_referenceRotation = 0.0;
+    QPointF m_referenceOffset;
+    bool m_referenceDragging = false;
+    QPoint m_referenceDragStart;
+    QPointF m_referenceOffsetStart;
 
     int m_zoom = 1;
     QPointF m_pan;
@@ -154,6 +227,12 @@ private:
     QImage m_floatImage;
     QImage m_floatBase;
     QRect m_floatSelection;
+
+    QImage m_tintMask;
+    QImage m_maskOverlay;
+    int m_maskPixels = 0;
+    QVector<QPoint> m_lassoPoints;
+    bool m_lassoActive = false;
 };
 
 } // namespace mcstudio

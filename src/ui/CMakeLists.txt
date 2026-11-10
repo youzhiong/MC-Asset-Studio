@@ -3,10 +3,16 @@ qt_add_library(mcstudio_ui STATIC
     CollectionCanvas.h
     CollectionWindow.cpp
     CollectionWindow.h
+    ColorSwatchGrid.cpp
+    ColorSwatchGrid.h
+    ColorWheel.cpp
+    ColorWheel.h
     CoverEditorDialog.cpp
     CoverEditorDialog.h
     DocumentArea.cpp
     DocumentArea.h
+    EquipmentDialog.cpp
+    EquipmentDialog.h
     GameDirectoryPage.cpp
     GameDirectoryPage.h
     IconFactory.cpp
@@ -17,6 +23,8 @@ qt_add_library(mcstudio_ui STATIC
     InspectorPanel.h
     MainWindow.cpp
     MainWindow.h
+    MergeColorsDialog.cpp
+    MergeColorsDialog.h
     NewProjectDialog.cpp
     NewProjectDialog.h
     OpenProjectDialog.cpp
@@ -31,10 +39,26 @@ qt_add_library(mcstudio_ui STATIC
     PreferencesDialog.h
     ProjectOverviewWidget.cpp
     ProjectOverviewWidget.h
+    ReferenceView.cpp
+    ReferenceView.h
+    ReduceColorsDialog.cpp
+    ReduceColorsDialog.h
+    ReplaceColorDialog.cpp
+    ReplaceColorDialog.h
     ResourcePackImportDialog.cpp
     ResourcePackImportDialog.h
     TextureEditorPage.cpp
     TextureEditorPage.h
+    TextureEditorWindow.cpp
+    TextureEditorWindow.h
+    TexturePickerDialog.cpp
+    TexturePickerDialog.h
+    TemplateDialog.cpp
+    TemplateDialog.h
+    TintDialog.cpp
+    TintDialog.h
+    TintEditors.cpp
+    TintEditors.h
     TextDocumentWidget.cpp
     TextDocumentWidget.h
     TextureBoardPage.cpp

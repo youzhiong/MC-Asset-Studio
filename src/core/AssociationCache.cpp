@@ -88,7 +88,7 @@ bool loadAssociationCache(const Project &project, const AssociationCacheKey &key
         return false;
 
     const QJsonObject root = document.object();
-    if (root.value(QStringLiteral("schema")).toInt() != 2)
+    if (root.value(QStringLiteral("schema")).toInt() != 3)
         return false;
     if (root.value(QStringLiteral("zipSha1")).toString() != key.zipSha1)
         return false;
@@ -118,6 +118,14 @@ bool loadAssociationCache(const Project &project, const AssociationCacheKey &key
     loaded.itemGroups = root.value(QStringLiteral("itemGroups")).toInt();
     loaded.referenceGroups = root.value(QStringLiteral("referenceGroups")).toInt();
     loaded.jsonReads = root.value(QStringLiteral("jsonReads")).toInt();
+
+    const QJsonObject names = root.value(QStringLiteral("textureNames")).toObject();
+    for (auto it = names.constBegin(); it != names.constEnd(); ++it)
+        loaded.textureNames.insert(it.key(), it.value().toString());
+    const QJsonObject ids = root.value(QStringLiteral("textureIds")).toObject();
+    for (auto it = ids.constBegin(); it != ids.constEnd(); ++it)
+        loaded.textureIds.insert(it.key(), it.value().toString());
+
     *result = std::move(loaded);
     return true;
 }
@@ -129,7 +137,7 @@ bool saveAssociationCache(const Project &project, const AssociationCacheKey &key
         return false;
 
     QJsonObject root;
-    root.insert(QStringLiteral("schema"), 2);
+    root.insert(QStringLiteral("schema"), 3);
     root.insert(QStringLiteral("zipSha1"), key.zipSha1);
     root.insert(QStringLiteral("contentFingerprint"), key.contentFingerprint);
     root.insert(QStringLiteral("referenceInstanceKey"), key.referenceInstanceKey);
@@ -145,6 +153,18 @@ bool saveAssociationCache(const Project &project, const AssociationCacheKey &key
     for (const TextureGroup &group : result.groups)
         groups.append(groupToJson(group));
     root.insert(QStringLiteral("groups"), groups);
+
+    QJsonObject names;
+    for (auto it = result.textureNames.constBegin(); it != result.textureNames.constEnd();
+         ++it) {
+        names.insert(it.key(), it.value());
+    }
+    root.insert(QStringLiteral("textureNames"), names);
+
+    QJsonObject ids;
+    for (auto it = result.textureIds.constBegin(); it != result.textureIds.constEnd(); ++it)
+        ids.insert(it.key(), it.value());
+    root.insert(QStringLiteral("textureIds"), ids);
 
     QJsonArray missingModels;
     for (const QString &model : result.missingModels)

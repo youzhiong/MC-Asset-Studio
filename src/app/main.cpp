@@ -256,6 +256,16 @@ int main(int argc, char *argv[])
 
     QApplication::setWindowIcon(IconFactory::appIcon());
 
+    // Copy old portable data/ into the per-user AppData and Documents layout
+    // on first launch. The old folder is intentionally left untouched.
+    const QString migration = mcstudio::AppPaths::migrateLegacyData();
+    if (!migration.isEmpty()) {
+        if (migration.startsWith(QStringLiteral("已把旧数据")))
+            qInfo("%s", qUtf8Printable(migration));
+        else
+            qWarning("%s", qUtf8Printable(migration));
+    }
+
     const mcstudio::GameSettings startupSettings = mcstudio::loadGameSettings();
     Theme::apply(app, startupSettings.theme, startupSettings.widgetStyle);
     Theme::installSystemThemeWatcher();
@@ -293,6 +303,22 @@ int main(int argc, char *argv[])
     QString importReferencePath;
     QString importReferenceNamespace;
     QString editTexturePath;
+    QString editorReferencePath;
+    QString editorShotPath;
+    QString dialogShotPath;
+    bool editorPopout = false;
+    bool editorReturn = false;
+    bool editorFocus = false;
+    bool showTemplateDialog = false;
+    bool showTintDialog = false;
+    bool showReduceDialog = false;
+    bool applyTintDemo = false;
+    bool applyHalfMask = false;
+    bool applyHalfMaskTint = false;
+    bool showEquipmentDialog = false;
+    bool showMergeDialog = false;
+    bool generateEquipment = false;
+    bool saveEditor = false;
     int packMetaFormat = -1;
     QString packMetaDescription;
     QString preferencesShotPath;    int packIndex = -1;
@@ -383,6 +409,38 @@ int main(int argc, char *argv[])
             importReferenceNamespace = args.at(++i);
         else if (arg == QLatin1String("--edit-texture") && i + 1 < args.size())
             editTexturePath = args.at(++i);
+        else if (arg == QLatin1String("--editor-reference") && i + 1 < args.size())
+            editorReferencePath = args.at(++i);
+        else if (arg == QLatin1String("--editor-shot") && i + 1 < args.size())
+            editorShotPath = args.at(++i);
+        else if (arg == QLatin1String("--dialog-shot") && i + 1 < args.size())
+            dialogShotPath = args.at(++i);
+        else if (arg == QLatin1String("--template-dialog"))
+            showTemplateDialog = true;
+        else if (arg == QLatin1String("--tint-dialog"))
+            showTintDialog = true;
+        else if (arg == QLatin1String("--reduce-dialog"))
+            showReduceDialog = true;
+        else if (arg == QLatin1String("--editor-tint-demo"))
+            applyTintDemo = true;
+        else if (arg == QLatin1String("--editor-half-mask"))
+            applyHalfMask = true;
+        else if (arg == QLatin1String("--editor-half-mask-tint"))
+            applyHalfMaskTint = true;
+        else if (arg == QLatin1String("--equipment-dialog"))
+            showEquipmentDialog = true;
+        else if (arg == QLatin1String("--merge-dialog"))
+            showMergeDialog = true;
+        else if (arg == QLatin1String("--equipment-demo"))
+            generateEquipment = true;
+        else if (arg == QLatin1String("--editor-save"))
+            saveEditor = true;
+        else if (arg == QLatin1String("--editor-popout"))
+            editorPopout = true;
+        else if (arg == QLatin1String("--editor-return"))
+            editorReturn = true;
+        else if (arg == QLatin1String("--editor-focus"))
+            editorFocus = true;
         else if (arg == QLatin1String("--new-project-shot") && i + 1 < args.size())
             newProjectShotPath = args.at(++i);
         else if (arg == QLatin1String("--open-project-shot") && i + 1 < args.size())
@@ -714,6 +772,34 @@ int main(int argc, char *argv[])
         window.setShowReferenceTextures(true);
     if (!editTexturePath.isEmpty())
         window.openTextureEditor(editTexturePath);
+    if (!editorReferencePath.isEmpty())
+        window.setTextureEditorReferenceForTesting(editorReferencePath);
+    if (applyTintDemo)
+        window.applyBuiltinTintForTesting();
+    if (applyHalfMask)
+        window.applyHalfMaskForTesting();
+    if (applyHalfMaskTint)
+        window.applyHalfMaskTintForTesting();
+    if (generateEquipment)
+        window.generateEquipmentForTesting();
+    if (showEquipmentDialog) {
+        QTimer::singleShot(300, &app, [&window] {
+            window.openEquipmentDialogForTesting();
+        });
+    }
+    if (showMergeDialog) {
+        QTimer::singleShot(300, &app, [&window] {
+            window.openMergeDialogForTesting();
+        });
+    }
+    if (saveEditor)
+        window.saveActiveTextureEditorForTesting();
+    if (editorPopout)
+        window.popOutActiveTextureEditorForTesting();
+    if (editorReturn)
+        window.returnActiveTextureEditorForTesting();
+    if (editorFocus)
+        window.setTextureEditorFocusForTesting(true);
     if (!importReferencePath.isEmpty())
         window.importReferencePath(importReferencePath);
     if (!importReferenceNamespace.isEmpty())
@@ -761,6 +847,49 @@ int main(int argc, char *argv[])
         QTimer::singleShot(screenshotDelay, &app, [&window, screenshotPath] {
             if (!window.grab().save(screenshotPath))
                 qWarning("Could not save screenshot to %s", qPrintable(screenshotPath));
+            QCoreApplication::quit();
+        });
+    }
+
+    if (!editorShotPath.isEmpty()) {
+        QTimer::singleShot(screenshotDelay, &app, [&window, editorShotPath] {
+            if (QWidget *editorWindow = window.activeTextureEditorWindowForTesting()) {
+                if (!editorWindow->grab().save(editorShotPath))
+                    qWarning("Could not save editor screenshot to %s",
+                             qPrintable(editorShotPath));
+            } else {
+                qWarning("No active texture editor window for %s",
+                         qPrintable(editorShotPath));
+            }
+            QCoreApplication::quit();
+        });
+    }
+
+    if (showTemplateDialog) {
+        QTimer::singleShot(300, &app, [&window] {
+            window.openTemplateDialogForTesting();
+        });
+    }
+    if (showTintDialog) {
+        QTimer::singleShot(300, &app, [&window] {
+            window.openTintDialogForTesting();
+        });
+    }
+    if (showReduceDialog) {
+        QTimer::singleShot(300, &app, [&window] {
+            window.openReduceDialogForTesting();
+        });
+    }
+    if (!dialogShotPath.isEmpty()) {
+        QTimer::singleShot(screenshotDelay, &app, [dialogShotPath] {
+            QWidget *widget = QApplication::activeModalWidget();
+            if (!widget)
+                widget = QApplication::activeWindow();
+            if (widget && !widget->grab().save(dialogShotPath))
+                qWarning("Could not save dialog screenshot to %s",
+                         qPrintable(dialogShotPath));
+            if (QWidget *modal = QApplication::activeModalWidget())
+                modal->close();
             QCoreApplication::quit();
         });
     }

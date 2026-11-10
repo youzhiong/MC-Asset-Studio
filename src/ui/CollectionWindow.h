@@ -44,12 +44,14 @@ public:
     void setAssociationResult(std::shared_ptr<const AssociationResult> association);
 
     std::function<void(const QString &)> onTextureSelected;
+    std::function<void(const QString &)> onOpenTexture;
 
 private:
     void changeEvent(QEvent *event) override;
     void rebuild();
     void buildFilterMenus();
     void updateFilterButtons();
+    void applyTextureNames(QVector<CollectionGroupData> &groups) const;
     bool matchesFilters(const TextureBoardEntry &entry) const;
     void appendReferenceGroups(QVector<CollectionGroupData> &groups) const;
     bool ensureAssociationBuilt();

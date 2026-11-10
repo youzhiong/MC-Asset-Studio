@@ -215,25 +215,29 @@ void floodFill(QImage &image, const QPoint &start, const QColor &color, bool con
     }
 }
 
-void replaceColor(QImage &image, const QColor &target, const QColor &color, int tolerance)
+int replaceColor(QImage &image, const QColor &target, const QColor &color, int tolerance)
 {
     if (image.isNull())
-        return;
+        return 0;
     ensureArgb32(image);
 
     const int toleranceValue = qBound(0, tolerance, 255);
     const QRgb targetRgba = target.rgba();
     const QRgb replacement = color.rgba();
     if (targetRgba == replacement && toleranceValue == 0)
-        return;
+        return 0;
 
+    int changed = 0;
     for (int y = 0; y < image.height(); ++y) {
         QRgb *row = rowAt(image, y);
         for (int x = 0; x < image.width(); ++x) {
-            if (sameColor(row[x], targetRgba, toleranceValue))
+            if (sameColor(row[x], targetRgba, toleranceValue)) {
                 row[x] = replacement;
+                ++changed;
+            }
         }
     }
+    return changed;
 }
 
 QVector<QPoint> mirrorPoints(const QPoint &point, const QSize &size, Symmetry symmetry)

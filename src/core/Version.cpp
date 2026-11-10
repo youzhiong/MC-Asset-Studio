@@ -3,7 +3,7 @@
 #include <QtGlobal>
 
 #ifndef MCSTUDIO_VERSION
-#define MCSTUDIO_VERSION "0.2.2"
+#define MCSTUDIO_VERSION "0.3.0"
 #endif
 
 #ifndef MCSTUDIO_BUILD_TYPE

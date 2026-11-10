@@ -15,6 +15,10 @@ struct CollectionGroupData {
     QString title;
     QString subtitle;
     bool framed = false;
+    // Type/mod groups use the localized block/item name as the card label;
+    // association groups keep the texture filename because the group title
+    // already carries the name.
+    bool showEntryNames = false;
     QVector<TextureBoardEntry> entries;
 };
 
@@ -36,12 +40,14 @@ public:
 
     std::function<void(int)> onZoomChanged;
     std::function<void(const QString &)> onTextureSelected;
+    std::function<void(const QString &)> onOpenTexture;
 
 protected:
     void wheelEvent(QWheelEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
     bool viewportEvent(QEvent *event) override;
     void changeEvent(QEvent *event) override;
 

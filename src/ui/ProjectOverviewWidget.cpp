@@ -128,10 +128,10 @@ ProjectOverviewWidget::ProjectOverviewWidget(const Project &project, QWidget *pa
         subtitleText = tr("这是一个新建的空资源包。source/ 保存 pack.mcmeta 等基础文件，"
                           "pack/ 是输出覆盖层；导出时重建为 ZIP。");
     } else if (project.origin == QLatin1String("folder")) {
-        subtitleText = tr("文件夹已复制到软件数据目录，原文件夹不会被修改。"
+        subtitleText = tr("文件夹已复制到项目目录，原文件夹不会被修改。"
                           "编辑结果位于 pack/ 覆盖层，导出时重建为 ZIP。");
     } else {
-        subtitleText = tr("ZIP 已自动解包到软件数据目录。原包保持只读；编辑结果位于 "
+        subtitleText = tr("ZIP 已自动解包到项目目录。原包保持只读；编辑结果位于 "
                           "pack/ 覆盖层，导出时重建为新的 ZIP。");
     }
     auto *subtitle = new QLabel(subtitleText);
@@ -295,7 +295,7 @@ ProjectOverviewWidget::ProjectOverviewWidget(const Project &project, QWidget *pa
     overwriteButton->setToolTip(project.sourceZip.isEmpty()
                                     ? tr("新建/文件夹项目没有原始 ZIP，请使用“导出为新 ZIP”")
                                     : tr("用当前内容原子替换原 ZIP"));
-    auto *folderButton = new QPushButton(tr("打开数据目录"));
+    auto *folderButton = new QPushButton(tr("打开项目目录"));
     folderButton->setObjectName(QStringLiteral("GhostButton"));
 
     buttonRow->addWidget(packEditorButton);

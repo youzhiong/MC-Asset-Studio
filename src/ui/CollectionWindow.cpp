@@ -60,7 +60,8 @@ CollectionWindow::CollectionWindow(const Project &project,
     auto *projectLabel = new QLabel(m_projectName);
     projectLabel->setObjectName(QStringLiteral("Muted"));
     m_projectLabel = projectLabel;
-    auto *hint = new QLabel(tr("双指缩放/平移 · Ctrl+滚轮 · 中键拖动 · 1:1 · 名称可悬停"));
+    auto *hint = new QLabel(
+        tr("双指缩放/平移 · Ctrl+滚轮 · 中键拖动 · 1:1 · 名称可悬停 · 双击图片编辑"));
     hint->setObjectName(QStringLiteral("BoardHint"));
 
     auto *categoryLabel = new QLabel(tr("类型"));
@@ -158,6 +159,10 @@ CollectionWindow::CollectionWindow(const Project &project,
     m_canvas->onTextureSelected = [this](const QString &path) {
         if (onTextureSelected)
             onTextureSelected(path);
+    };
+    m_canvas->onOpenTexture = [this](const QString &path) {
+        if (onOpenTexture)
+            onOpenTexture(path);
     };
     layout->addWidget(m_canvas, 1);
 
@@ -454,6 +459,7 @@ void CollectionWindow::appendReferenceGroups(QVector<CollectionGroupData> &group
         group.title = tr("参考材质 · %1").arg(modTitle(ns, ns));
         group.subtitle = tr("%1 个参考材质（未导入）").arg(byMod.value(ns).size());
         group.framed = false;
+        group.showEntryNames = true;
         group.entries = byMod.value(ns);
         groups.append(group);
     }
@@ -508,6 +514,12 @@ void CollectionWindow::rebuild()
 {
     m_canvas->setCanvasBlocks(m_widthSpin->value());
 
+    // Names are useful in every grouping mode, not only "按方块/物品".
+    // Only resolve once a reference context or shared result exists; the
+    // constructor must stay responsive for large packs.
+    if (m_assets || m_sharedAssociation)
+        ensureAssociationBuilt();
+
     QVector<CollectionGroupData> groups;
     if (m_groupMode == QLatin1String("association"))
         groups = buildAssociationGroups();
@@ -523,6 +535,7 @@ void CollectionWindow::rebuild()
         appendReferenceGroups(groups);
     }
 
+    applyTextureNames(groups);
     m_canvas->setGroups(groups);
 
     int images = 0;
@@ -549,10 +562,38 @@ void CollectionWindow::rebuild()
                   .arg(m_widthSpin->value()));
     }
 
-    if (m_associationPending
-        && (m_groupMode == QLatin1String("association")
-            || m_groupMode == QLatin1String("mod-association"))) {
-        m_statusLabel->setText(tr("正在后台解析模型关联，完成后自动刷新…"));
+    if (m_associationPending)
+        m_statusLabel->setText(tr("正在后台解析方块名称，完成后自动刷新…"));
+}
+
+void CollectionWindow::applyTextureNames(QVector<CollectionGroupData> &groups) const
+{
+    if (!m_associationBuilt)
+        return;
+
+    QHash<QString, QString> names = m_association.textureNames;
+    QHash<QString, QString> ids = m_association.textureIds;
+
+    // Older caches only carry groups; reconstruct pack names from them so a
+    // cached project still shows localized labels after upgrading.
+    if (names.isEmpty()) {
+        for (const TextureGroup &group : m_association.groups) {
+            const QString id =
+                QStringLiteral("%1:%2").arg(group.namespaceId, group.name);
+            for (const QString &texture : group.textures) {
+                if (!names.contains(texture)) {
+                    names.insert(texture, group.displayName);
+                    ids.insert(texture, id);
+                }
+            }
+        }
+    }
+
+    for (CollectionGroupData &group : groups) {
+        for (TextureBoardEntry &entry : group.entries) {
+            entry.displayName = names.value(entry.path);
+            entry.displayId = ids.value(entry.path);
+        }
     }
 }
 
@@ -594,6 +635,7 @@ QVector<CollectionGroupData> CollectionWindow::buildTypeGroups() const
         CollectionGroupData group;
         group.title = title;
         group.framed = false;
+        group.showEntryNames = true;
         for (const TextureBoardEntry &entry : m_entries) {
             if (!matchesFilters(entry))
                 continue;
@@ -682,6 +724,7 @@ QVector<CollectionGroupData> CollectionWindow::buildModGroups() const
         group.title = titles.value(it.key());
         group.subtitle = tr("%1 个材质").arg(it.value().size());
         group.framed = false;
+        group.showEntryNames = true;
         for (const TextureBoardEntry *entry : it.value())
             group.entries.append(*entry);
         groups.append(group);

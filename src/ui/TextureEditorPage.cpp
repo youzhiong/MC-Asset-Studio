@@ -1,13 +1,30 @@
 #include "ui/TextureEditorPage.h"
 
+#include "core/AppPaths.h"
+#include "core/ColorReducer.h"
+#include "core/PaletteStore.h"
+#include "core/TemplateLibrary.h"
+#include "ui/ColorSwatchGrid.h"
+#include "ui/ColorWheel.h"
+#include "ui/EquipmentDialog.h"
 #include "ui/IconFactory.h"
+#include "ui/MergeColorsDialog.h"
 #include "ui/PixelIcons.h"
+#include "ui/ReferenceView.h"
+#include "ui/ReduceColorsDialog.h"
+#include "ui/ReplaceColorDialog.h"
+#include "ui/TexturePickerDialog.h"
+#include "ui/TemplateDialog.h"
 #include "ui/Theme.h"
+#include "ui/TintDialog.h"
 
 #include <QAbstractSpinBox>
+#include <QAction>
 #include <QApplication>
 #include <QButtonGroup>
+#include <QBuffer>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QColorDialog>
 #include <QComboBox>
 #include <QDialog>
@@ -15,6 +32,7 @@
 #include <QDir>
 #include <QEvent>
 #include <QFileInfo>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QFrame>
 #include <QGridLayout>
@@ -23,17 +41,24 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMessageBox>
+#include <QPainter>
 #include <QPixmap>
 #include <QPlainTextEdit>
+#include <QRegion>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSettings>
+#include <QSet>
 #include <QShortcut>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QSpinBox>
+#include <QSplitter>
 #include <QTimer>
 #include <QToolButton>
+#include <QToolTip>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -107,6 +132,8 @@ TextureEditorPage::TextureEditorPage(const Project &project, const QString &rela
     , m_project(project)
     , m_path(normalizedPath(relativePath))
 {
+    restoreLayoutSettings();
+
     QString error;
     const bool loaded = m_document.load(m_project, m_path, &error);
 
@@ -123,10 +150,16 @@ TextureEditorPage::TextureEditorPage(const Project &project, const QString &rela
 
     selectTool(PixelCanvas::Tool::Pen);
     setCurrentColor(m_color, false);
-    rebuildRecentColors();
     updateDirtyUi();
     updateInfo();
     updateTimeline();
+    refreshColorLibrary();
+    refreshTexturePalette();
+    updateScaleButtons();
+
+    QSettings settings(QDir(AppPaths::dataRoot()).filePath(QStringLiteral("settings.ini")),
+                       QSettings::IniFormat);
+    applyTileMode(settings.value(QStringLiteral("editor/tileMode"), 0).toInt());
 
     QTimer::singleShot(0, this, [this] {
         if (m_canvas) {
@@ -139,6 +172,7 @@ TextureEditorPage::TextureEditorPage(const Project &project, const QString &rela
 TextureEditorPage::~TextureEditorPage()
 {
     stopPlayback();
+    saveLayoutSettings();
     if (m_canvas)
         m_canvas->setDocument(nullptr);
 }
@@ -166,6 +200,8 @@ void TextureEditorPage::undo()
     m_canvas->refresh();
     updateDirtyUi();
     updateInfo();
+    refreshTexturePalette();
+    updateScaleButtons();
 }
 
 void TextureEditorPage::redo()
@@ -176,6 +212,8 @@ void TextureEditorPage::redo()
     m_canvas->refresh();
     updateDirtyUi();
     updateInfo();
+    refreshTexturePalette();
+    updateScaleButtons();
 }
 
 bool TextureEditorPage::saveDocument()
@@ -224,14 +262,29 @@ void TextureEditorPage::buildUi()
 
     root->addWidget(buildHeader());
 
-    auto *body = new QHBoxLayout;
-    body->setContentsMargins(0, 0, 0, 0);
-    body->setSpacing(0);
-    body->addWidget(buildToolColumn());
-    body->addWidget(m_canvas, 1);
-    body->addWidget(buildSidePanel());
-    root->addLayout(body, 1);
+    m_toolColumn = buildToolColumn();
+    QWidget *sidePanel = buildSidePanel();
+
+    m_splitter = new QSplitter(Qt::Horizontal);
+    m_splitter->setObjectName(QStringLiteral("EditorSplitter"));
+    m_splitter->setChildrenCollapsible(false);
+    m_splitter->setHandleWidth(4);
+    m_splitter->addWidget(m_toolColumn);
+    m_splitter->addWidget(m_canvas);
+    m_splitter->addWidget(sidePanel);
+    m_splitter->setStretchFactor(0, 0);
+    m_splitter->setStretchFactor(1, 1);
+    m_splitter->setStretchFactor(2, 0);
+    connect(m_splitter, &QSplitter::splitterMoved, this, [this](int, int) {
+        if (m_sidePanelScroll)
+            m_savedPanelWidth = m_sidePanelScroll->width();
+    });
+
+    root->addWidget(m_splitter, 1);
     root->addWidget(buildTimeline());
+
+    setPanelOnRight(m_panelOnRight);
+    applySectionVisibility();
 
     m_canvas->onHover = [this](QPoint point, QColor color) {
         if (!m_infoCursor)
@@ -254,6 +307,8 @@ void TextureEditorPage::buildUi()
         stopPlayback();
         updateDirtyUi();
         updateInfo();
+        refreshTexturePalette();
+        updateScaleButtons();
     };
     m_canvas->onZoomChanged = [this](int percent) {
         if (m_zoomLabel)
@@ -285,6 +340,8 @@ void TextureEditorPage::buildUi()
     addShortcut(QKeySequence(Qt::Key_R), [this] { selectTool(PixelCanvas::Tool::Rect); });
     addShortcut(QKeySequence(Qt::Key_O), [this] { selectTool(PixelCanvas::Tool::Ellipse); });
     addShortcut(QKeySequence(Qt::Key_M), [this] { selectTool(PixelCanvas::Tool::Select); });
+    addShortcut(QKeySequence(Qt::Key_A), [this] { selectTool(PixelCanvas::Tool::Lasso); });
+    addShortcut(QKeySequence(Qt::Key_W), [this] { selectTool(PixelCanvas::Tool::MagicWand); });
     addShortcut(QKeySequence(Qt::Key_F), [this] { m_canvas->fitToView(); });
     addShortcut(QKeySequence::Copy, [this] { m_canvas->copySelectionToClipboard(); });
     addShortcut(QKeySequence::Paste, [this] { m_canvas->pasteFromClipboard(); });
@@ -331,13 +388,129 @@ QWidget *TextureEditorPage::buildHeader()
         saveDocument();
     });
 
+    m_layoutButton = new QToolButton;
+    m_layoutButton->setText(tr("布局"));
+    m_layoutButton->setToolTip(tr("自定义编辑器布局"));
+    m_layoutButton->setPopupMode(QToolButton::InstantPopup);
+    m_layoutButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_layoutButton->setFocusPolicy(Qt::NoFocus);
+    buildLayoutMenu(m_layoutButton);
+
+    m_focusButton = new QToolButton;
+    m_focusButton->setText(tr("专注"));
+    m_focusButton->setCheckable(true);
+    m_focusButton->setToolTip(tr("隐藏主界面的左右栏，让编辑区更大"));
+    m_focusButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_focusButton->setAutoRaise(true);
+    m_focusButton->setFocusPolicy(Qt::NoFocus);
+    connect(m_focusButton, &QToolButton::toggled, this, [this](bool checked) {
+        m_focusMode = checked;
+        if (onFocusModeChanged)
+            onFocusModeChanged(checked);
+    });
+
+    m_popOutButton = new QToolButton;
+    m_popOutButton->setText(tr("独立窗口"));
+    m_popOutButton->setToolTip(tr("把这张材质放到单独的窗口里编辑"));
+    m_popOutButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_popOutButton->setAutoRaise(true);
+    m_popOutButton->setFocusPolicy(Qt::NoFocus);
+    connect(m_popOutButton, &QToolButton::clicked, this, [this] {
+        if (m_windowed) {
+            if (onReturnToTab)
+                onReturnToTab();
+        } else if (onPopOut) {
+            onPopOut();
+        }
+    });
+
+    m_templateButton = new QToolButton;
+    m_templateButton->setText(tr("模板"));
+    m_templateButton->setToolTip(tr("从灰度模板开始制作锭、矿块、装备等"));
+    m_templateButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_templateButton->setAutoRaise(true);
+    m_templateButton->setFocusPolicy(Qt::NoFocus);
+    connect(m_templateButton, &QToolButton::clicked, this,
+            &TextureEditorPage::openTemplateDialog);
+
+    m_tintButton = new QToolButton;
+    m_tintButton->setText(tr("调色"));
+    m_tintButton->setToolTip(tr("用颜色带和曲线把明暗映射成颜色"));
+    m_tintButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_tintButton->setAutoRaise(true);
+    m_tintButton->setFocusPolicy(Qt::NoFocus);
+    connect(m_tintButton, &QToolButton::clicked, this,
+            &TextureEditorPage::openTintDialog);
+
     layout->addWidget(title);
     layout->addWidget(path, 1);
     layout->addWidget(m_sizeLabel);
     layout->addWidget(m_modeLabel);
     layout->addWidget(m_dirtyBadge);
+    layout->addWidget(m_focusButton);
+    layout->addWidget(m_popOutButton);
+    layout->addWidget(m_templateButton);
+    layout->addWidget(m_tintButton);
+    layout->addWidget(m_layoutButton);
     layout->addWidget(m_saveButton);
     return header;
+}
+
+void TextureEditorPage::buildLayoutMenu(QToolButton *button)
+{
+    auto *menu = new QMenu(button);
+
+    m_panelRightAction = menu->addAction(tr("把面板放在右侧"));
+    m_panelRightAction->setCheckable(true);
+    connect(m_panelRightAction, &QAction::triggered, this, [this] {
+        setPanelOnRight(true);
+    });
+
+    m_panelLeftAction = menu->addAction(tr("把面板放在左侧"));
+    m_panelLeftAction->setCheckable(true);
+    connect(m_panelLeftAction, &QAction::triggered, this, [this] {
+        setPanelOnRight(false);
+    });
+
+    menu->addSeparator();
+
+    m_showColorAction = menu->addAction(tr("显示颜色面板"));
+    m_showColorAction->setCheckable(true);
+    connect(m_showColorAction, &QAction::triggered, this, [this](bool checked) {
+        m_showColorSection = checked;
+        applySectionVisibility();
+        saveLayoutSettings();
+    });
+
+    m_showToolsAction = menu->addAction(tr("显示工具选项"));
+    m_showToolsAction->setCheckable(true);
+    connect(m_showToolsAction, &QAction::triggered, this, [this](bool checked) {
+        m_showToolsSection = checked;
+        applySectionVisibility();
+        saveLayoutSettings();
+    });
+
+    m_showInfoAction = menu->addAction(tr("显示信息"));
+    m_showInfoAction->setCheckable(true);
+    connect(m_showInfoAction, &QAction::triggered, this, [this](bool checked) {
+        m_showInfoSection = checked;
+        applySectionVisibility();
+        saveLayoutSettings();
+    });
+
+    m_showTimelineAction = menu->addAction(tr("显示帧时间轴"));
+    m_showTimelineAction->setCheckable(true);
+    connect(m_showTimelineAction, &QAction::triggered, this, [this](bool checked) {
+        m_showTimeline = checked;
+        updateTimeline();
+        saveLayoutSettings();
+    });
+
+    menu->addSeparator();
+    QAction *resetAction = menu->addAction(tr("恢复默认布局"));
+    connect(resetAction, &QAction::triggered, this, [this] { resetLayout(); });
+
+    button->setMenu(menu);
 }
 
 QToolButton *TextureEditorPage::makeToolButton(PixelIcons::Glyph glyph, const QString &text,
@@ -385,6 +558,10 @@ QWidget *TextureEditorPage::buildToolColumn()
         {PixelIcons::Glyph::Rect, "矩", QT_TR_NOOP("矩形 (R)"), PixelCanvas::Tool::Rect},
         {PixelIcons::Glyph::Ellipse, "圆", QT_TR_NOOP("椭圆 (O)"), PixelCanvas::Tool::Ellipse},
         {PixelIcons::Glyph::Select, "选", QT_TR_NOOP("矩形选区 (M)"), PixelCanvas::Tool::Select},
+        {PixelIcons::Glyph::Select, "套", QT_TR_NOOP("套索：圈出调色蒙版 (A)"),
+         PixelCanvas::Tool::Lasso},
+        {PixelIcons::Glyph::Bucket, "魔", QT_TR_NOOP("魔棒：按颜色圈出调色蒙版 (W)"),
+         PixelCanvas::Tool::MagicWand},
     };
 
     for (const ToolSpec &spec : specs) {
@@ -433,24 +610,6 @@ QWidget *TextureEditorPage::buildToolColumn()
     return column;
 }
 
-QPushButton *TextureEditorPage::makePaletteButton(const QColor &color, QWidget *parent)
-{
-    auto *button = new QPushButton(parent);
-    button->setFixedSize(24, 24);
-    button->setCursor(Qt::PointingHandCursor);
-    button->setToolTip(color.name(QColor::HexRgb).toUpper());
-    button->setStyleSheet(
-        QStringLiteral("QPushButton { background-color: %1; border: 1px solid %2; "
-                       "border-radius: 3px; }"
-                       "QPushButton:hover { border-color: %3; }")
-            .arg(color.name(QColor::HexRgb), Theme::colors().borderStrong.name(),
-                 Theme::colors().accent.name()));
-    connect(button, &QPushButton::clicked, this, [this, color] {
-        setCurrentColor(color, true);
-    });
-    return button;
-}
-
 QWidget *TextureEditorPage::buildSidePanel()
 {
     auto *panel = new QFrame;
@@ -459,11 +618,43 @@ QWidget *TextureEditorPage::buildSidePanel()
 
     auto *layout = new QVBoxLayout(panel);
     layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(8);
+
+    m_referenceSection = buildReferenceSection();
+    layout->addWidget(m_referenceSection);
+
+    m_colorSection = buildColorSection();
+    layout->addWidget(m_colorSection);
+
+    m_toolSection = buildToolOptions();
+    layout->addWidget(m_toolSection);
+
+    m_infoSection = buildInfoSection();
+    layout->addWidget(m_infoSection);
+
+    layout->addStretch(1);
+
+    m_sidePanelScroll = new QScrollArea;
+    m_sidePanelScroll->setObjectName(QStringLiteral("EditorSidePanelScroll"));
+    m_sidePanelScroll->setWidgetResizable(true);
+    m_sidePanelScroll->setFrameShape(QFrame::NoFrame);
+    m_sidePanelScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_sidePanelScroll->setMinimumWidth(280);
+    m_sidePanelScroll->setMaximumWidth(560);
+    m_sidePanelScroll->setWidget(panel);
+    return m_sidePanelScroll;
+}
+
+QWidget *TextureEditorPage::buildColorSection()
+{
+    auto *section = new QWidget;
+    auto *layout = new QVBoxLayout(section);
+    layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(7);
 
-    auto *colorTitle = new QLabel(tr("颜色"));
-    colorTitle->setObjectName(QStringLiteral("SectionTitle"));
-    layout->addWidget(colorTitle);
+    auto *title = new QLabel(tr("颜色"));
+    title->setObjectName(QStringLiteral("SectionTitle"));
+    layout->addWidget(title);
 
     auto *colorRow = new QHBoxLayout;
     colorRow->setSpacing(6);
@@ -500,7 +691,7 @@ QWidget *TextureEditorPage::buildSidePanel()
     m_alphaSpin = new QSpinBox;
     m_alphaSpin->setRange(0, 255);
     m_alphaSpin->setValue(255);
-    m_alphaSpin->setFixedWidth(58);
+    m_alphaSpin->setFixedWidth(92);
     alphaRow->addWidget(alphaLabel);
     alphaRow->addWidget(m_alphaSlider, 1);
     alphaRow->addWidget(m_alphaSpin);
@@ -516,28 +707,251 @@ QWidget *TextureEditorPage::buildSidePanel()
     connect(m_alphaSlider, &QSlider::valueChanged, this, applyAlpha);
     connect(m_alphaSpin, &QSpinBox::valueChanged, this, applyAlpha);
 
-    auto *paletteWidget = new QWidget;
-    m_paletteLayout = new QGridLayout(paletteWidget);
-    m_paletteLayout->setContentsMargins(0, 0, 0, 0);
-    m_paletteLayout->setSpacing(3);
-    const QVector<QColor> palette = minecraftPalette();
-    for (int index = 0; index < palette.size(); ++index) {
-        m_paletteLayout->addWidget(makePaletteButton(palette.at(index), paletteWidget),
-                                   index / 8, index % 8);
-    }
-    layout->addWidget(paletteWidget);
+    auto *wheelTitle = new QLabel(tr("色轮"));
+    wheelTitle->setObjectName(QStringLiteral("FieldLabel"));
+    layout->addWidget(wheelTitle);
 
-    auto *recentLabel = new QLabel(tr("最近"));
-    recentLabel->setObjectName(QStringLiteral("FieldLabel"));
-    m_recentLabel = recentLabel;
-    layout->addWidget(recentLabel);
+    m_wheel = new ColorWheel;
+    m_wheel->setFixedSize(196, 196);
+    m_wheel->setToolTip(tr("外圈选色相，往圆心越来越淡；明暗由下面滑杆控制"));
+    m_wheel->onColorChanged = [this](const QColor &color) {
+        if (m_syncingColor)
+            return;
+        QColor next = color;
+        next.setAlpha(m_color.alpha());
+        setCurrentColor(next, false);
+    };
+    m_wheel->onColorCommitted = [this] {
+        mcstudio::pushRecentColor(m_color);
+        refreshColorLibrary();
+    };
+    layout->addWidget(m_wheel, 0, Qt::AlignHCenter);
 
-    auto *recentWidget = new QWidget;
-    m_recentWidget = recentWidget;
-    m_recentLayout = new QGridLayout(recentWidget);
-    m_recentLayout->setContentsMargins(0, 0, 0, 0);
-    m_recentLayout->setSpacing(3);
-    layout->addWidget(recentWidget);
+    auto *valueRow = new QHBoxLayout;
+    valueRow->setSpacing(6);
+    auto *valueTitle = new QLabel(tr("明暗"));
+    valueTitle->setObjectName(QStringLiteral("FieldLabel"));
+    m_valueSlider = new QSlider(Qt::Horizontal);
+    m_valueSlider->setRange(0, 255);
+    m_valueSlider->setPageStep(16);
+    m_valueSlider->setValue(255);
+    m_valueSlider->setToolTip(tr("0 = 黑，255 = 最亮"));
+    m_valueLabel = new QLabel(QStringLiteral("100%"));
+    m_valueLabel->setObjectName(QStringLiteral("Muted"));
+    m_valueLabel->setMinimumWidth(40);
+    m_valueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    connect(m_valueSlider, &QSlider::valueChanged, this, [this](int value) {
+        if (m_syncingColor)
+            return;
+        int hue = 0;
+        int saturation = 0;
+        int oldValue = 0;
+        int alpha = 255;
+        m_color.getHsv(&hue, &saturation, &oldValue, &alpha);
+        const QColor next = QColor::fromHsv(hue < 0 ? 0 : hue, saturation, value, alpha);
+        setCurrentColor(next, false);
+    });
+    valueRow->addWidget(valueTitle);
+    valueRow->addWidget(m_valueSlider, 1);
+    valueRow->addWidget(m_valueLabel);
+    layout->addLayout(valueRow);
+
+    auto *divider = new QFrame;
+    divider->setObjectName(QStringLiteral("Divider"));
+    divider->setFixedHeight(1);
+    layout->addWidget(divider);
+
+    auto *paletteHeader = new QHBoxLayout;
+    paletteHeader->setSpacing(6);
+    auto *paletteTitle = new QLabel(tr("本图颜色"));
+    paletteTitle->setObjectName(QStringLiteral("FieldLabel"));
+    m_textureCountLabel = new QLabel(QStringLiteral("—"));
+    m_textureCountLabel->setObjectName(QStringLiteral("Muted"));
+    paletteHeader->addWidget(paletteTitle);
+    paletteHeader->addWidget(m_textureCountLabel);
+    m_mergeColorsButton = new QPushButton(tr("合并…"));
+    m_mergeColorsButton->setObjectName(QStringLiteral("GhostButton"));
+    m_mergeColorsButton->setToolTip(tr("手动勾选几种颜色并合并成一种"));
+    m_mergeColorsButton->setFocusPolicy(Qt::NoFocus);
+    connect(m_mergeColorsButton, &QPushButton::clicked, this,
+            &TextureEditorPage::mergeColorsInteractive);
+    paletteHeader->addWidget(m_mergeColorsButton);
+    paletteHeader->addStretch(1);
+    m_paletteScopeCheck = new QCheckBox(tr("只看当前帧"));
+    m_paletteScopeCheck->setChecked(!m_paletteWholeTexture);
+    m_paletteScopeCheck->setToolTip(
+        tr("勾选后只统计当前帧；不勾选则统计整张材质（动画包含所有帧）"));
+    connect(m_paletteScopeCheck, &QCheckBox::toggled, this,
+            [this](bool) { applyPaletteScope(); });
+    layout->addLayout(paletteHeader);
+
+    m_textureEmptyLabel = new QLabel(tr("这张材质只有透明像素。"));
+    m_textureEmptyLabel->setObjectName(QStringLiteral("PanelHint"));
+    m_textureEmptyLabel->setVisible(false);
+    layout->addWidget(m_textureEmptyLabel);
+
+    m_textureGrid = new ColorSwatchGrid;
+    m_textureGrid->setTooltipBuilder([this](const QColor &color, int count) {
+        QString text = color.name(QColor::HexRgb).toUpper();
+        if (color.alpha() != 255)
+            text += tr(" · 透明度 %1%").arg(qRound(color.alphaF() * 100));
+        if (count > 0) {
+            text += tr(" · %1 像素").arg(count);
+            if (m_textureOpaquePixels > 0) {
+                text += tr("（%1%）")
+                            .arg(qRound(100.0 * count / m_textureOpaquePixels));
+            }
+        }
+        return text;
+    });
+    m_textureGrid->onPick = [this](const QColor &color) {
+        setCurrentColor(color, true);
+    };
+    m_textureGrid->onContextMenu = [this](const QColor &color, const QPoint &pos) {
+        showColorMenu(color, pos);
+    };
+    layout->addWidget(m_textureGrid);
+    layout->addWidget(m_paletteScopeCheck);
+
+    auto *defaultTitle = new QLabel(tr("默认 16 色"));
+    defaultTitle->setObjectName(QStringLiteral("FieldLabel"));
+    layout->addWidget(defaultTitle);
+
+    m_paletteGrid = new ColorSwatchGrid;
+    m_paletteGrid->setSwatches(minecraftPalette());
+    m_paletteGrid->onPick = [this](const QColor &color) {
+        setCurrentColor(color, true);
+    };
+    m_paletteGrid->onContextMenu = [this](const QColor &color, const QPoint &pos) {
+        showColorMenu(color, pos);
+    };
+    layout->addWidget(m_paletteGrid);
+
+    m_pinnedBox = new QWidget;
+    auto *pinnedLayout = new QVBoxLayout(m_pinnedBox);
+    pinnedLayout->setContentsMargins(0, 0, 0, 0);
+    pinnedLayout->setSpacing(4);
+    m_pinnedLabel = new QLabel(tr("收藏"));
+    m_pinnedLabel->setObjectName(QStringLiteral("FieldLabel"));
+    m_pinnedGrid = new ColorSwatchGrid;
+    m_pinnedGrid->onPick = [this](const QColor &color) {
+        setCurrentColor(color, true);
+    };
+    m_pinnedGrid->onContextMenu = [this](const QColor &color, const QPoint &pos) {
+        showColorMenu(color, pos);
+    };
+    pinnedLayout->addWidget(m_pinnedLabel);
+    pinnedLayout->addWidget(m_pinnedGrid);
+    m_pinnedBox->setVisible(false);
+    layout->addWidget(m_pinnedBox);
+
+    m_recentBox = new QWidget;
+    auto *recentLayout = new QVBoxLayout(m_recentBox);
+    recentLayout->setContentsMargins(0, 0, 0, 0);
+    recentLayout->setSpacing(4);
+    auto *recentTitle = new QLabel(tr("最近使用"));
+    recentTitle->setObjectName(QStringLiteral("FieldLabel"));
+    m_recentEmptyLabel = new QLabel(
+        tr("还没用过颜色。选过的颜色会留在这里，关掉软件也不会丢。"));
+    m_recentEmptyLabel->setObjectName(QStringLiteral("PanelHint"));
+    m_recentEmptyLabel->setWordWrap(true);
+    m_recentGrid = new ColorSwatchGrid;
+    m_recentGrid->onPick = [this](const QColor &color) {
+        setCurrentColor(color, true);
+    };
+    m_recentGrid->onContextMenu = [this](const QColor &color, const QPoint &pos) {
+        showColorMenu(color, pos);
+    };
+    recentLayout->addWidget(recentTitle);
+    recentLayout->addWidget(m_recentEmptyLabel);
+    recentLayout->addWidget(m_recentGrid);
+    layout->addWidget(m_recentBox);
+
+    return section;
+}
+
+QWidget *TextureEditorPage::buildReferenceSection()
+{
+    auto *section = new QWidget;
+    auto *layout = new QVBoxLayout(section);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(6);
+
+    auto *divider = new QFrame;
+    divider->setObjectName(QStringLiteral("Divider"));
+    divider->setFixedHeight(1);
+    layout->addWidget(divider);
+
+    auto *title = new QLabel(tr("参考图"));
+    title->setObjectName(QStringLiteral("SectionTitle"));
+    layout->addWidget(title);
+
+    m_referenceView = new ReferenceView;
+    m_referenceView->setFixedHeight(200);
+    m_referenceView->onColorPicked = [this](const QColor &color) {
+        setCurrentColor(color, true);
+    };
+    m_referenceView->onViewChanged = [this] { updateReferenceUi(); };
+    layout->addWidget(m_referenceView);
+
+    auto *chooseRow = new QHBoxLayout;
+    chooseRow->setSpacing(6);
+    m_referenceChooseButton = new QPushButton(tr("选择参考图…"));
+    m_referenceChooseButton->setObjectName(QStringLiteral("GhostButton"));
+    m_referenceChooseButton->setToolTip(tr("参考图只用于对照，不会写进资源包"));
+    auto *sourceMenu = new QMenu(m_referenceChooseButton);
+    QAction *fromLibrary = sourceMenu->addAction(tr("从项目/参考材质…"));
+    QAction *fromFile = sourceMenu->addAction(tr("从电脑图片…"));
+    connect(fromLibrary, &QAction::triggered, this,
+            &TextureEditorPage::chooseReferenceFromLibrary);
+    connect(fromFile, &QAction::triggered, this,
+            &TextureEditorPage::chooseReferenceFromFile);
+    m_referenceChooseButton->setMenu(sourceMenu);
+
+    m_referenceClearButton = new QPushButton(tr("清除"));
+    m_referenceClearButton->setObjectName(QStringLiteral("GhostButton"));
+    connect(m_referenceClearButton, &QPushButton::clicked, this,
+            &TextureEditorPage::clearReference);
+    chooseRow->addWidget(m_referenceChooseButton);
+    chooseRow->addWidget(m_referenceClearButton);
+    layout->addLayout(chooseRow);
+
+    auto *actionRow = new QHBoxLayout;
+    actionRow->setSpacing(6);
+    m_referenceFitButton = new QPushButton(tr("适应"));
+    m_referenceFitButton->setObjectName(QStringLiteral("GhostButton"));
+    m_referenceFitButton->setToolTip(tr("把参考图完整显示在预览框里"));
+    connect(m_referenceFitButton, &QPushButton::clicked, this, [this] {
+        if (m_referenceView)
+            m_referenceView->fitToView();
+    });
+    m_referenceActualButton = new QPushButton(tr("1:1"));
+    m_referenceActualButton->setObjectName(QStringLiteral("GhostButton"));
+    m_referenceActualButton->setToolTip(tr("按参考图的原始像素大小显示"));
+    connect(m_referenceActualButton, &QPushButton::clicked, this, [this] {
+        if (m_referenceView)
+            m_referenceView->resetZoom();
+    });
+    actionRow->addWidget(m_referenceFitButton);
+    actionRow->addWidget(m_referenceActualButton);
+    actionRow->addStretch(1);
+    layout->addLayout(actionRow);
+
+    m_referenceInfo = new QLabel;
+    m_referenceInfo->setObjectName(QStringLiteral("PanelHint"));
+    m_referenceInfo->setWordWrap(true);
+    layout->addWidget(m_referenceInfo);
+
+    updateReferenceUi();
+    return section;
+}
+
+QWidget *TextureEditorPage::buildToolOptions()
+{
+    auto *section = new QWidget;
+    auto *layout = new QVBoxLayout(section);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(7);
 
     auto *divider = new QFrame;
     divider->setObjectName(QStringLiteral("Divider"));
@@ -597,6 +1011,18 @@ QWidget *TextureEditorPage::buildSidePanel()
     });
     form->addRow(tr("对称"), m_symmetryCombo);
 
+    m_tileCombo = new QComboBox;
+    m_tileCombo->addItem(tr("关闭"), 0);
+    m_tileCombo->addItem(tr("全平铺"), 1);
+    m_tileCombo->addItem(tr("水平平铺"), 2);
+    m_tileCombo->addItem(tr("垂直平铺"), 3);
+    m_tileCombo->setToolTip(
+        tr("在画布上重复显示这张材质，方便检查接缝和重复纹理；编辑始终作用在中间那一块"));
+    connect(m_tileCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+        applyTileMode(m_tileCombo->currentData().toInt());
+    });
+    form->addRow(tr("平铺"), m_tileCombo);
+
     m_gridCheck = new QCheckBox(tr("像素网格"));
     connect(m_gridCheck, &QCheckBox::toggled, this, [this](bool checked) {
         m_canvas->setShowGrid(checked);
@@ -611,10 +1037,36 @@ QWidget *TextureEditorPage::buildSidePanel()
     form->addRow(QString(), m_onionCheck);
     layout->addLayout(form);
 
-    auto *divider2 = new QFrame;
-    divider2->setObjectName(QStringLiteral("Divider"));
-    divider2->setFixedHeight(1);
-    layout->addWidget(divider2);
+    auto *reduceButton = new QPushButton(tr("减少颜色…"));
+    reduceButton->setObjectName(QStringLiteral("GhostButton"));
+    reduceButton->setToolTip(tr("把相近的颜色合并成一种，减少总色数"));
+    connect(reduceButton, &QPushButton::clicked, this,
+            &TextureEditorPage::openReduceColorsDialog);
+    layout->addWidget(reduceButton);
+
+    auto *clearMaskButton = new QPushButton(tr("清除调色蒙版"));
+    clearMaskButton->setObjectName(QStringLiteral("GhostButton"));
+    clearMaskButton->setToolTip(tr("清除套索/魔棒圈出的调色区域"));
+    connect(clearMaskButton, &QPushButton::clicked, this, [this] {
+        if (m_canvas)
+            m_canvas->clearTintMask();
+    });
+    layout->addWidget(clearMaskButton);
+
+    return section;
+}
+
+QWidget *TextureEditorPage::buildInfoSection()
+{
+    auto *section = new QWidget;
+    auto *layout = new QVBoxLayout(section);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(7);
+
+    auto *divider = new QFrame;
+    divider->setObjectName(QStringLiteral("Divider"));
+    divider->setFixedHeight(1);
+    layout->addWidget(divider);
 
     auto *infoTitle = new QLabel(tr("信息"));
     infoTitle->setObjectName(QStringLiteral("SectionTitle"));
@@ -633,7 +1085,28 @@ QWidget *TextureEditorPage::buildSidePanel()
     m_infoCursor = new QLabel(QStringLiteral("—"));
     m_infoCursor->setObjectName(QStringLiteral("Muted"));
     m_infoCursor->setWordWrap(true);
-    infoForm->addRow(tr("尺寸"), m_infoSize);
+
+    auto *sizeRow = new QWidget;
+    auto *sizeLayout = new QHBoxLayout(sizeRow);
+    sizeLayout->setContentsMargins(0, 0, 0, 0);
+    sizeLayout->setSpacing(5);
+    m_scaleUpButton = new QPushButton(tr("×2"));
+    m_scaleUpButton->setObjectName(QStringLiteral("GhostButton"));
+    m_scaleUpButton->setFixedWidth(40);
+    m_scaleUpButton->setToolTip(tr("把尺寸放大一倍"));
+    connect(m_scaleUpButton, &QPushButton::clicked, this,
+            [this] { scaleTextureInteractive(2, 1); });
+    m_scaleDownButton = new QPushButton(tr("÷2"));
+    m_scaleDownButton->setObjectName(QStringLiteral("GhostButton"));
+    m_scaleDownButton->setFixedWidth(40);
+    m_scaleDownButton->setToolTip(tr("把尺寸缩小一半"));
+    connect(m_scaleDownButton, &QPushButton::clicked, this,
+            [this] { scaleTextureInteractive(1, 2); });
+    sizeLayout->addWidget(m_infoSize, 1);
+    sizeLayout->addWidget(m_scaleUpButton);
+    sizeLayout->addWidget(m_scaleDownButton);
+
+    infoForm->addRow(tr("尺寸"), sizeRow);
     infoForm->addRow(tr("帧"), m_infoFrame);
     infoForm->addRow(tr("缩放"), m_infoZoom);
     infoForm->addRow(tr("光标"), m_infoCursor);
@@ -662,16 +1135,7 @@ QWidget *TextureEditorPage::buildSidePanel()
     zoomRow->addWidget(fitButton);
     layout->addLayout(zoomRow);
 
-    layout->addStretch(1);
-
-    auto *scroll = new QScrollArea;
-    scroll->setObjectName(QStringLiteral("EditorSidePanelScroll"));
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    scroll->setFixedWidth(252);
-    scroll->setWidget(panel);
-    return scroll;
+    return section;
 }
 
 QWidget *TextureEditorPage::buildTimeline()
@@ -854,13 +1318,14 @@ void TextureEditorPage::updateToolOptions()
     const bool brush = tool == PixelCanvas::Tool::Pen || tool == PixelCanvas::Tool::Eraser
                        || tool == PixelCanvas::Tool::Line || tool == PixelCanvas::Tool::Rect
                        || tool == PixelCanvas::Tool::Ellipse;
-    const bool bucket = tool == PixelCanvas::Tool::Bucket;
+    const bool bucket = tool == PixelCanvas::Tool::Bucket
+                        || tool == PixelCanvas::Tool::MagicWand;
     const bool shape = tool == PixelCanvas::Tool::Rect || tool == PixelCanvas::Tool::Ellipse;
 
     if (m_brushSpin)
         m_brushSpin->setEnabled(brush);
     if (m_contiguousCheck)
-        m_contiguousCheck->setEnabled(bucket);
+        m_contiguousCheck->setEnabled(tool == PixelCanvas::Tool::Bucket);
     if (m_toleranceSpin)
         m_toleranceSpin->setEnabled(bucket);
     if (m_fillCheck)
@@ -874,8 +1339,10 @@ void TextureEditorPage::setCurrentColor(const QColor &color, bool remember)
     m_color = color;
     m_canvas->setColor(color);
     updateColorUi();
-    if (remember)
-        pushRecentColor(color);
+    if (remember) {
+        mcstudio::pushRecentColor(color);
+        refreshColorLibrary();
+    }
 }
 
 void TextureEditorPage::updateColorUi()
@@ -903,42 +1370,160 @@ void TextureEditorPage::updateColorUi()
     m_hexEdit->setText(colorToText(m_color));
     m_alphaSlider->setValue(m_color.alpha());
     m_alphaSpin->setValue(m_color.alpha());
+
+    if (m_valueSlider) {
+        const QSignalBlocker valueBlocker(m_valueSlider);
+        int hue = 0;
+        int saturation = 0;
+        int value = 255;
+        int alphaValue = 255;
+        m_color.getHsv(&hue, &saturation, &value, &alphaValue);
+        m_valueSlider->setValue(value);
+        if (m_valueLabel) {
+            m_valueLabel->setText(
+                QStringLiteral("%1%").arg(qRound(value * 100.0 / 255.0)));
+        }
+    }
+
+    updateWheelFromColor();
+    refreshSwatchSelections();
     m_syncingColor = false;
 }
 
-void TextureEditorPage::pushRecentColor(const QColor &color)
+void TextureEditorPage::updateWheelFromColor()
 {
-    if (!color.isValid() || color.alpha() == 0)
-        return;
-    for (int index = m_recentColors.size() - 1; index >= 0; --index) {
-        if (m_recentColors.at(index) == color)
-            m_recentColors.removeAt(index);
-    }
-    m_recentColors.prepend(color);
-    while (m_recentColors.size() > 16)
-        m_recentColors.removeLast();
-    rebuildRecentColors();
+    if (m_wheel)
+        m_wheel->setColor(m_color);
 }
 
-void TextureEditorPage::rebuildRecentColors()
+void TextureEditorPage::refreshSwatchSelections()
 {
-    if (!m_recentLayout)
-        return;
-    clearLayout(m_recentLayout);
+    if (m_textureGrid)
+        m_textureGrid->setSelectedColor(m_color);
+    if (m_paletteGrid)
+        m_paletteGrid->setSelectedColor(m_color);
+    if (m_recentGrid)
+        m_recentGrid->setSelectedColor(m_color);
+    if (m_pinnedGrid)
+        m_pinnedGrid->setSelectedColor(m_color);
+}
 
-    const bool empty = m_recentColors.isEmpty();
-    if (m_recentLabel)
-        m_recentLabel->setVisible(!empty);
-    if (m_recentWidget)
-        m_recentWidget->setVisible(!empty);
-    if (empty)
+void TextureEditorPage::refreshColorLibrary()
+{
+    if (!m_recentGrid || !m_pinnedGrid)
         return;
 
-    for (int index = 0; index < m_recentColors.size(); ++index) {
-        m_recentLayout->addWidget(
-            makePaletteButton(m_recentColors.at(index), m_recentLayout->parentWidget()),
-            index / 8, index % 8);
+    const QVector<QColor> recent = mcstudio::recentColors();
+    const QVector<QColor> pinned = mcstudio::pinnedColors();
+
+    m_recentGrid->setSwatches(recent);
+    m_recentEmptyLabel->setVisible(recent.isEmpty());
+    m_recentGrid->setVisible(!recent.isEmpty());
+
+    m_pinnedGrid->setSwatches(pinned);
+    m_pinnedBox->setVisible(!pinned.isEmpty());
+    if (m_pinnedLabel)
+        m_pinnedLabel->setText(tr("收藏（%1）").arg(pinned.size()));
+
+    refreshSwatchSelections();
+}
+
+void TextureEditorPage::refreshTexturePalette()
+{
+    if (!m_textureGrid)
+        return;
+    if (!m_document.isValid()) {
+        m_textureGrid->setSwatches({});
+        if (m_textureCountLabel)
+            m_textureCountLabel->setText(QStringLiteral("—"));
+        return;
     }
+
+    const bool currentFrame = !m_paletteWholeTexture;
+    const TextureDocument::PaletteStats stats =
+        m_document.paletteStats(currentFrame, m_canvas ? m_canvas->frame() : 0);
+
+    m_textureColorTotal = stats.colors.size();
+    m_textureTransparent = stats.transparentPixels;
+    m_textureOpaquePixels = stats.totalPixels - stats.transparentPixels;
+
+    constexpr int kMaxSwatches = 128;
+    const int shown = qMin(kMaxSwatches, stats.colors.size());
+    m_textureColors.clear();
+    m_textureCounts.clear();
+    m_textureColors.reserve(shown);
+    m_textureCounts.reserve(shown);
+    for (int index = 0; index < shown; ++index) {
+        m_textureColors.append(QColor::fromRgba(stats.colors.at(index).rgba));
+        m_textureCounts.append(stats.colors.at(index).count);
+    }
+
+    m_textureGrid->setSwatches(m_textureColors, m_textureCounts);
+    m_textureGrid->setVisible(!m_textureColors.isEmpty());
+    if (m_textureEmptyLabel)
+        m_textureEmptyLabel->setVisible(m_textureColors.isEmpty());
+
+    if (m_textureCountLabel) {
+        QString text = tr("%1 色").arg(m_textureColorTotal);
+        if (m_textureColorTotal > shown)
+            text += tr(" · 显示前 %1").arg(shown);
+        if (m_textureTransparent > 0)
+            text += tr(" · 透明 %1").arg(m_textureTransparent);
+        m_textureCountLabel->setText(text);
+    }
+
+    if (m_paletteScopeCheck)
+        m_paletteScopeCheck->setVisible(m_document.animated());
+
+    refreshSwatchSelections();
+}
+
+void TextureEditorPage::mergeColorsInteractive()
+{
+    if (!m_document.isValid())
+        return;
+
+    const bool currentFrame = !m_paletteWholeTexture;
+    const TextureDocument::PaletteStats stats =
+        m_document.paletteStats(currentFrame, m_canvas->frame());
+    if (stats.colors.size() < 2) {
+        QMessageBox::information(this, tr("合并颜色"),
+                                 tr("这张材质里没有两种以上的颜色可以合并。"));
+        return;
+    }
+
+    MergeColorsDialog dialog(stats.colors, m_document.animated(), this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QVector<QRgb> selected = dialog.selectedColors();
+    if (selected.size() < 2)
+        return;
+
+    int changed = 0;
+    if (!m_document.mergeColors(selected, dialog.targetColor(),
+                                dialog.applyAllFrames(), m_canvas->frame(),
+                                &changed)) {
+        return;
+    }
+
+    m_canvas->refresh();
+    refreshAnimationEdit();
+    updateDirtyUi();
+    updateInfo();
+    refreshTexturePalette();
+}
+
+void TextureEditorPage::applyPaletteScope(){
+    if (!m_paletteScopeCheck)
+        return;
+    m_paletteWholeTexture = !m_paletteScopeCheck->isChecked();
+
+    QSettings settings(QDir(AppPaths::dataRoot()).filePath(QStringLiteral("settings.ini")),
+                       QSettings::IniFormat);
+    settings.setValue(QStringLiteral("editor/paletteWhole"), m_paletteWholeTexture);
+
+    refreshTexturePalette();
 }
 
 void TextureEditorPage::clearLayout(QLayout *layout)
@@ -977,6 +1562,10 @@ void TextureEditorPage::updateDirtyUi()
 
     if (m_saveButton)
         m_saveButton->setEnabled(valid && dirty);
+    if (m_templateButton)
+        m_templateButton->setEnabled(valid);
+    if (m_tintButton)
+        m_tintButton->setEnabled(valid);
     if (m_undoButton)
         m_undoButton->setEnabled(valid && m_document.canUndo());
     if (m_redoButton)
@@ -1006,6 +1595,7 @@ void TextureEditorPage::updateInfo()
             m_infoZoom->setText(QStringLiteral("—"));
         if (m_timeline)
             m_timeline->setVisible(false);
+        updateScaleButtons();
         updateAnimationPanel();
         return;
     }
@@ -1053,6 +1643,7 @@ void TextureEditorPage::updateInfo()
         m_lastAnimated = animated;
         updateTimeline();
     }
+    updateScaleButtons();
     updateAnimationPanel();
 }
 
@@ -1303,6 +1894,8 @@ void TextureEditorPage::refreshAnimationEdit()
     updateDirtyUi();
     updateInfo();
     updateTimeline();
+    refreshTexturePalette();
+    updateScaleButtons();
 }
 
 void TextureEditorPage::updateTimeline()
@@ -1312,9 +1905,11 @@ void TextureEditorPage::updateTimeline()
 
     clearLayout(m_timelineLayout);
 
-    const bool animated = m_document.isValid() && m_document.animated()
-                          && m_document.frameCount() > 1;
-    m_timeline->setVisible(m_document.isValid());
+    const bool valid = m_document.isValid();
+    const bool animated = valid && m_document.animated() && m_document.frameCount() > 1;
+    m_timeline->setVisible(valid && m_showTimeline);
+    if (!valid || !m_showTimeline)
+        return;
     if (m_timelineTop)
         m_timelineTop->setVisible(animated);
     m_timeline->setFixedHeight(animated ? 126 : 48);
@@ -1363,6 +1958,8 @@ void TextureEditorPage::selectFrame(int entry)
         }
     }
     updateInfo();
+    if (!m_paletteWholeTexture)
+        refreshTexturePalette();
 }
 
 bool TextureEditorPage::handleTextInputShortcut() const
@@ -1371,6 +1968,723 @@ bool TextureEditorPage::handleTextInputShortcut() const
     return qobject_cast<QLineEdit *>(focus) || qobject_cast<QAbstractSpinBox *>(focus)
            || qobject_cast<QComboBox *>(focus)
            || qobject_cast<QPlainTextEdit *>(focus);
+}
+
+void TextureEditorPage::showColorMenu(const QColor &color, const QPoint &globalPos)
+{
+    if (!color.isValid())
+        return;
+
+    QMenu menu(this);
+    QAction *pickAction = menu.addAction(tr("设为当前颜色"));
+    const bool pinned = mcstudio::isPinnedColor(color);
+    QAction *pinAction = menu.addAction(pinned ? tr("取消收藏") : tr("加入收藏"));
+    menu.addSeparator();
+    QAction *replaceAction = menu.addAction(tr("替换此颜色…"));
+    replaceAction->setEnabled(color.alpha() > 0);
+    QAction *copyAction = menu.addAction(tr("复制色值"));
+    menu.addSeparator();
+    QAction *clearAction = menu.addAction(tr("清空“最近使用”"));
+
+    QAction *chosen = menu.exec(globalPos);
+    if (!chosen)
+        return;
+
+    if (chosen == pickAction) {
+        setCurrentColor(color, true);
+    } else if (chosen == pinAction) {
+        togglePinnedColor(color);
+    } else if (chosen == replaceAction) {
+        replaceColorInteractive(color);
+    } else if (chosen == copyAction) {
+        QApplication::clipboard()->setText(colorToText(color));
+        QToolTip::showText(globalPos, tr("已复制 %1").arg(colorToText(color)), this);
+    } else if (chosen == clearAction) {
+        mcstudio::clearRecentColors();
+        refreshColorLibrary();
+    }
+}
+
+void TextureEditorPage::togglePinnedColor(const QColor &color)
+{
+    mcstudio::togglePinnedColor(color);
+    refreshColorLibrary();
+}
+
+void TextureEditorPage::replaceColorInteractive(const QColor &color)
+{
+    if (!m_document.isValid() || color.alpha() == 0)
+        return;
+
+    ReplaceColorDialog dialog(color, m_document.animated(), this);
+    dialog.setCountProvider([this, color](int tolerance, bool allFrames) {
+        return m_document.countColor(color, tolerance, allFrames,
+                                     m_canvas ? m_canvas->frame() : 0);
+    });
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    int changed = 0;
+    if (!m_document.replaceColor(color, dialog.replacement(), dialog.tolerance(),
+                                 dialog.allFrames(), m_canvas ? m_canvas->frame() : 0,
+                                 &changed)) {
+        QMessageBox::information(this, tr("替换颜色"),
+                                 tr("没有找到可以替换的像素。"));
+        return;
+    }
+
+    refreshAnimationEdit();
+}
+
+void TextureEditorPage::setReferenceImage(const QImage &image, const QString &name)
+{
+    if (image.isNull() || !m_referenceView)
+        return;
+
+    m_referenceName = name.isEmpty() ? tr("参考图") : name;
+    if (m_referenceChooseButton)
+        m_referenceChooseButton->setToolTip(m_referenceName);
+    m_referenceView->setImage(image);
+    m_referenceView->fitToView();
+    updateReferenceUi();
+}
+
+void TextureEditorPage::chooseReferenceFromLibrary()
+{
+    if (!referencePathProvider)
+        return;
+
+    QStringList paths = referencePathProvider(true);
+    paths.removeAll(m_path);
+    if (paths.isEmpty()) {
+        QMessageBox::information(this, tr("选择参考图"),
+                                 tr("当前项目和参考实例里没有可用的材质。"));
+        return;
+    }
+
+    TexturePickerDialog dialog(paths, tr("选择参考图"), this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    const QString path = dialog.selectedPath();
+    if (path.isEmpty())
+        return;
+
+    QByteArray bytes;
+    if (referenceBytesProvider)
+        bytes = referenceBytesProvider(path);
+    const QImage image = QImage::fromData(bytes);
+    if (image.isNull()) {
+        QMessageBox::warning(this, tr("无法读取参考图"),
+                             tr("这个材质不是可读取的图片：\n%1").arg(path));
+        return;
+    }
+
+    setReferenceImage(image, QFileInfo(path).fileName());
+    if (m_referenceChooseButton)
+        m_referenceChooseButton->setToolTip(path);
+}
+
+void TextureEditorPage::chooseReferenceFromFile()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("选择参考图片"), QString(),
+        tr("图片 (*.png *.jpg *.jpeg *.bmp *.webp);;所有文件 (*)"));
+    if (path.isEmpty())
+        return;
+
+    const QImage image(path);
+    if (image.isNull()) {
+        QMessageBox::warning(this, tr("无法读取参考图"),
+                             tr("这个文件不是可读取的图片：\n%1").arg(path));
+        return;
+    }
+
+    setReferenceImage(image, QFileInfo(path).fileName());
+    if (m_referenceChooseButton)
+        m_referenceChooseButton->setToolTip(path);
+}
+
+void TextureEditorPage::clearReference()
+{
+    if (m_referenceView)
+        m_referenceView->clearImage();
+    m_referenceName.clear();
+    if (m_referenceChooseButton)
+        m_referenceChooseButton->setToolTip(tr("参考图只用于对照，不会写进资源包"));
+    updateReferenceUi();
+}
+
+void TextureEditorPage::updateReferenceUi()
+{
+    if (!m_referenceInfo || !m_referenceView)
+        return;
+
+    const bool has = m_referenceView->hasImage();
+    m_referenceFitButton->setEnabled(has);
+    m_referenceActualButton->setEnabled(has);
+    m_referenceClearButton->setEnabled(has);
+
+    if (!has) {
+        m_referenceInfo->setText(tr("参考图只用于对照，不会写进资源包。"));
+        return;
+    }
+
+    const QSize size = m_referenceView->image().size();
+    const QString name = m_referenceName.isEmpty() ? tr("参考图") : m_referenceName;
+    m_referenceInfo->setText(
+        tr("%1 · %2 × %3 · 缩放 %4%\n拖动平移 · 滚轮缩放 · 单击或右键取色 · 双击适应")
+            .arg(name)
+            .arg(size.width())
+            .arg(size.height())
+            .arg(m_referenceView->zoomPercent()));
+}
+
+
+void TextureEditorPage::openTemplateDialog()
+{
+    if (!m_document.isValid())
+        return;
+
+    auto paths = [this]() -> QStringList {
+        return referencePathProvider ? referencePathProvider(true) : QStringList();
+    };
+    auto bytes = [this](const QString &path) -> QByteArray {
+        return referenceBytesProvider ? referenceBytesProvider(path) : QByteArray();
+    };
+
+    TemplateDialog dialog(paths, bytes, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    if (dialog.equipmentRequested()) {
+        openEquipmentDialog(dialog.selectedPackZip());
+        return;
+    }
+
+    QImage image = dialog.selectedImage();
+    if (image.isNull())
+        return;
+    const QSize frame = m_document.frameSize();
+    if (image.size() != frame)
+        image = image.scaled(frame, Qt::IgnoreAspectRatio, Qt::FastTransformation);
+    openTintDialogWithBase(image);
+}
+
+void TextureEditorPage::openEquipmentDialog(const QString &zipPath)
+{
+    if (!m_document.isValid() || zipPath.isEmpty())
+        return;
+
+    TemplateLibrary library;
+    const QVector<TemplateEntry> assets = library.packAssets(zipPath);
+    if (assets.size() < 2) {
+        QMessageBox::information(this, tr("生成整套装备"),
+                                 tr("这个模板包里没有多个 assets/ PNG。"));
+        return;
+    }
+
+    EquipmentDialog dialog(m_project, zipPath, assets, this);
+    dialog.onGenerated = [this](const QStringList &paths) {
+        if (onFilesGenerated)
+            onFilesGenerated(paths);
+    };
+    dialog.exec();
+}
+
+void TextureEditorPage::showEquipmentDialogForTesting()
+{
+    TemplateLibrary library;
+    const QString zipPath = library.ensureBuiltinEquipmentPack();
+    if (zipPath.isEmpty())
+        return;
+    const QVector<TemplateEntry> assets = library.packAssets(zipPath);
+    EquipmentDialog dialog(m_project, zipPath, assets, this);
+    dialog.onGenerated = [this](const QStringList &paths) {
+        if (onFilesGenerated)
+            onFilesGenerated(paths);
+    };
+    dialog.exec();
+}
+
+void TextureEditorPage::openTintDialog()
+{
+    if (!m_document.isValid())
+        return;
+    openTintDialogWithBase(QImage());
+}
+
+void TextureEditorPage::openReduceColorsDialog()
+{
+    if (!m_document.isValid())
+        return;
+
+    ReduceColorsDialog dialog(m_document.frame(m_canvas->frame()),
+                              m_document.animated(), this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    applyColorReduction(dialog.targetColors(), dialog.applyAllFrames());
+}
+
+void TextureEditorPage::applyColorReduction(int targetColors, bool allFrames)
+{
+    if (!m_document.isValid())
+        return;
+
+    const bool animated = m_document.animated();
+    const int first = (allFrames && animated) ? 0 : m_canvas->frame();
+    const int last = (allFrames && animated) ? m_document.frameCount() - 1 : first;
+    QVector<int> entries;
+    QSet<int> visited;
+    QVector<QImage> images;
+
+    for (int entry = first; entry <= last; ++entry) {
+        const int physical = m_document.playbackIndex(entry);
+        if (visited.contains(physical))
+            continue;
+        visited.insert(physical);
+        entries.append(entry);
+        images.append(m_document.frame(entry));
+    }
+    if (images.isEmpty())
+        return;
+
+    const QVector<QRgb> palette = buildReducedPalette(images, targetColors);
+    if (palette.isEmpty())
+        return;
+
+    bool changed = false;
+    for (int entry : entries) {
+        const QImage reduced = reduceColors(m_document.frame(entry), palette);
+        if (reduced.isNull())
+            continue;
+        m_document.frameRef(entry) = reduced;
+        changed = true;
+    }
+    if (!changed)
+        return;
+
+    m_document.commitEdit();
+    m_canvas->refresh();
+    refreshAnimationEdit();
+    updateDirtyUi();
+    updateInfo();
+    refreshTexturePalette();
+}
+
+void TextureEditorPage::openTintDialogWithBase(const QImage &baseTemplate)
+{
+    if (!m_document.isValid())
+        return;
+
+    const QImage base = baseTemplate.isNull() ? m_document.frame(m_canvas->frame())
+                                              : baseTemplate;
+    if (base.isNull())
+        return;
+
+    TintDialog dialog(base, m_document.animated(), m_canvas->hasSelection(),
+                      m_canvas->hasTintMask(), this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    QImage mask;
+    if (dialog.maskOnly() && m_canvas->hasTintMask()) {
+        mask = m_canvas->tintMask();
+    } else if (dialog.selectionOnly() && m_canvas->hasSelection()) {
+        mask = QImage(m_document.frameSize(), QImage::Format_ARGB32);
+        mask.fill(Qt::black);
+        QPainter painter(&mask);
+        painter.fillRect(m_canvas->selection(), Qt::white);
+        painter.end();
+    }
+
+    const TintRecipe second = dialog.secondRecipe();
+    applyTint(baseTemplate, dialog.recipe(), dialog.applyAllFrames(), mask,
+              dialog.gradientEnabled() ? &second : nullptr, dialog.angleDegrees());
+}
+
+void TextureEditorPage::applyTint(const QImage &baseTemplate, const TintRecipe &recipe,
+                                  bool allFrames, const QImage &mask,
+                                  const TintRecipe *gradientRecipe,
+                                  double angleDegrees)
+{
+    if (!m_document.isValid())
+        return;
+
+    const QSize frameSize = m_document.frameSize();
+    const bool useMask = !mask.isNull() && mask.size() == frameSize;
+    const bool animated = m_document.animated();
+    const int first = (allFrames && animated) ? 0 : m_canvas->frame();
+    const int last = (allFrames && animated) ? m_document.frameCount() - 1 : first;
+    int changed = 0;
+    QSet<int> visited;
+
+    for (int entry = first; entry <= last; ++entry) {
+        const int physical = m_document.playbackIndex(entry);
+        if (visited.contains(physical))
+            continue;
+        visited.insert(physical);
+
+        const QImage current = m_document.frame(entry);
+        QImage base = baseTemplate.isNull() ? current : baseTemplate;
+        if (base.isNull())
+            continue;
+        if (base.size() != frameSize)
+            base = base.scaled(frameSize, Qt::IgnoreAspectRatio, Qt::FastTransformation);
+
+        if (!baseTemplate.isNull() && useMask) {
+            const QImage maskImage = mask.format() == QImage::Format_ARGB32
+                                         ? mask
+                                         : mask.convertToFormat(QImage::Format_ARGB32);
+            for (int y = 0; y < frameSize.height(); ++y) {
+                QRgb *targetRow = reinterpret_cast<QRgb *>(base.scanLine(y));
+                const QRgb *currentRow =
+                    reinterpret_cast<const QRgb *>(current.constScanLine(y));
+                const QRgb *maskRow =
+                    reinterpret_cast<const QRgb *>(maskImage.constScanLine(y));
+                for (int x = 0; x < frameSize.width(); ++x) {
+                    if (qRed(maskRow[x]) < 128)
+                        targetRow[x] = currentRow[x];
+                }
+            }
+        }
+
+        const QImage tinted =
+            gradientRecipe
+                ? recipe.applyGradient(base, *gradientRecipe, angleDegrees, mask)
+                : recipe.apply(base, mask);
+        if (tinted.isNull())
+            continue;
+        m_document.frameRef(entry) = tinted;
+        ++changed;
+    }
+
+    if (changed == 0)
+        return;
+
+    m_document.commitEdit();
+    m_canvas->refresh();
+    refreshAnimationEdit();
+    updateDirtyUi();
+    updateInfo();
+    refreshTexturePalette();
+}
+
+void TextureEditorPage::applyBuiltinTestTint()
+{
+    if (!m_document.isValid())
+        return;
+    const auto builtins = TemplateLibrary::builtinTemplates();
+    for (const TemplateEntry &entry : builtins) {
+        if (!entry.name.contains(QStringLiteral("锭")))
+            continue;
+        QImage image = entry.builtinImage.scaled(m_document.frameSize(),
+                                                Qt::IgnoreAspectRatio,
+                                                Qt::FastTransformation);
+        applyTint(image, TintRecipe::preset(QStringLiteral("gold")), false,
+                  QImage(), nullptr, 0.0);
+        return;
+    }
+}
+
+void TextureEditorPage::applyHalfMaskForTesting()
+{
+    if (!m_document.isValid() || !m_canvas)
+        return;
+    const QSize size = m_document.frameSize();
+    QImage mask(size, QImage::Format_ARGB32);
+    mask.fill(Qt::black);
+    QPainter painter(&mask);
+    painter.fillRect(QRect(size.width() / 2, 0, size.width() / 2, size.height()),
+                     Qt::white);
+    painter.end();
+    m_canvas->setTintMask(mask);
+}
+
+void TextureEditorPage::applyHalfMaskTintForTesting()
+{
+    applyHalfMaskForTesting();
+    if (!m_canvas || !m_canvas->hasTintMask())
+        return;
+    applyTint(QImage(), TintRecipe::preset(QStringLiteral("gold")), false,
+              m_canvas->tintMask(), nullptr, 0.0);
+}
+
+bool TextureEditorPage::generateBuiltinEquipmentForTesting()
+{
+    TemplateLibrary library;
+    const QString zipPath = library.ensureBuiltinEquipmentPack();
+    const QVector<TemplateEntry> assets = library.packAssets(zipPath);
+    if (assets.isEmpty())
+        return false;
+
+    QStringList generated;
+    for (const TemplateEntry &entry : assets) {
+        QImage image = library.load(entry);
+        if (image.isNull())
+            continue;
+        QString path = entry.entryPath;
+        path.replace(QStringLiteral("assets/minecraft/"),
+                     QStringLiteral("assets/mcstudio_demo/"));
+        QByteArray bytes;
+        QBuffer buffer(&bytes);
+        buffer.open(QIODevice::WriteOnly);
+        if (!image.save(&buffer, "PNG"))
+            continue;
+        QString error;
+        if (m_project.writeOutputFile(path, bytes, &error))
+            generated.append(path);
+    }
+    if (generated.isEmpty())
+        return false;
+    if (onFilesGenerated)
+        onFilesGenerated(generated);
+    return true;
+}
+
+void TextureEditorPage::setWindowed(bool windowed)
+{
+    if (m_windowed == windowed)
+        return;
+    m_windowed = windowed;
+
+    if (m_popOutButton) {
+        m_popOutButton->setText(windowed ? tr("收回标签") : tr("独立窗口"));
+        m_popOutButton->setToolTip(windowed
+                                       ? tr("把材质放回主窗口的标签页")
+                                       : tr("把这张材质放到单独的窗口里编辑"));
+    }
+    if (m_focusButton) {
+        m_focusButton->setEnabled(!windowed);
+        if (windowed && m_focusButton->isChecked())
+            m_focusButton->setChecked(false);
+    }
+}
+
+void TextureEditorPage::setFocusMode(bool enabled)
+{
+    if (m_focusMode == enabled)
+        return;
+    m_focusMode = enabled;
+    if (m_focusButton) {
+        const QSignalBlocker blocker(m_focusButton);
+        m_focusButton->setChecked(enabled);
+    }
+}
+
+void TextureEditorPage::restoreLayoutSettings()
+{
+    QSettings settings(QDir(AppPaths::dataRoot()).filePath(QStringLiteral("settings.ini")),
+                       QSettings::IniFormat);
+    m_panelOnRight = settings.value(QStringLiteral("editor/panelRight"), true).toBool();
+    m_savedPanelWidth = settings.value(QStringLiteral("editor/panelWidth"), 300).toInt();
+    if (m_savedPanelWidth < 280)
+        m_savedPanelWidth = 300;
+    m_showColorSection = settings.value(QStringLiteral("editor/showColor"), true).toBool();
+    m_showToolsSection = settings.value(QStringLiteral("editor/showTools"), true).toBool();
+    m_showInfoSection = settings.value(QStringLiteral("editor/showInfo"), true).toBool();
+    m_showTimeline = settings.value(QStringLiteral("editor/showTimeline"), true).toBool();
+    m_paletteWholeTexture =
+        settings.value(QStringLiteral("editor/paletteWhole"), true).toBool();
+}
+
+void TextureEditorPage::saveLayoutSettings()
+{
+    QSettings settings(QDir(AppPaths::dataRoot()).filePath(QStringLiteral("settings.ini")),
+                       QSettings::IniFormat);
+    settings.setValue(QStringLiteral("editor/panelRight"), m_panelOnRight);
+    settings.setValue(QStringLiteral("editor/panelWidth"), m_savedPanelWidth);
+    settings.setValue(QStringLiteral("editor/showColor"), m_showColorSection);
+    settings.setValue(QStringLiteral("editor/showTools"), m_showToolsSection);
+    settings.setValue(QStringLiteral("editor/showInfo"), m_showInfoSection);
+    settings.setValue(QStringLiteral("editor/showTimeline"), m_showTimeline);
+    settings.setValue(QStringLiteral("editor/paletteWhole"), m_paletteWholeTexture);
+}
+
+void TextureEditorPage::setPanelOnRight(bool right)
+{
+    if (m_layoutApplied && m_sidePanelScroll && m_sidePanelScroll->width() > 150)
+        m_savedPanelWidth = m_sidePanelScroll->width();
+    m_panelOnRight = right;
+
+    if (m_splitter && m_sidePanelScroll && m_toolColumn) {
+        if (right) {
+            m_splitter->addWidget(m_sidePanelScroll);
+            m_splitter->setStretchFactor(1, 1);
+            m_splitter->setStretchFactor(2, 0);
+        } else {
+            m_splitter->insertWidget(1, m_sidePanelScroll);
+            m_splitter->setStretchFactor(1, 0);
+            m_splitter->setStretchFactor(2, 1);
+        }
+
+        const int total = m_splitter->width();
+        if (total > 400) {
+            const int panel = qBound(280, m_savedPanelWidth, 560);
+            const int canvas = qMax(320, total - 58 - panel);
+            if (right)
+                m_splitter->setSizes({58, canvas, panel});
+            else
+                m_splitter->setSizes({58, panel, canvas});
+        }
+    }
+
+    if (m_panelRightAction)
+        m_panelRightAction->setChecked(right);
+    if (m_panelLeftAction)
+        m_panelLeftAction->setChecked(!right);
+    saveLayoutSettings();
+}
+
+void TextureEditorPage::applySectionVisibility()
+{
+    if (m_colorSection)
+        m_colorSection->setVisible(m_showColorSection);
+    if (m_toolSection)
+        m_toolSection->setVisible(m_showToolsSection);
+    if (m_infoSection)
+        m_infoSection->setVisible(m_showInfoSection);
+
+    if (m_showColorAction)
+        m_showColorAction->setChecked(m_showColorSection);
+    if (m_showToolsAction)
+        m_showToolsAction->setChecked(m_showToolsSection);
+    if (m_showInfoAction)
+        m_showInfoAction->setChecked(m_showInfoSection);
+    if (m_showTimelineAction)
+        m_showTimelineAction->setChecked(m_showTimeline);
+
+    updateTimeline();
+}
+
+void TextureEditorPage::resetLayout()
+{
+    m_showColorSection = true;
+    m_showToolsSection = true;
+    m_showInfoSection = true;
+    m_showTimeline = true;
+    m_savedPanelWidth = 300;
+    m_layoutApplied = false;
+    setPanelOnRight(true);
+    applySectionVisibility();
+    saveLayoutSettings();
+
+    if (m_splitter && m_splitter->width() > 400) {
+        const int total = m_splitter->width();
+        m_splitter->setSizes({58, qMax(320, total - 58 - 300), 300});
+        m_layoutApplied = true;
+    }
+}
+
+void TextureEditorPage::applyTileMode(int mode)
+{
+    if (!m_canvas)
+        return;
+
+    const int bounded = qBound(0, mode, 3);
+    m_canvas->setTileMode(static_cast<PixelCanvas::TileMode>(bounded));
+    if (m_tileCombo) {
+        const QSignalBlocker blocker(m_tileCombo);
+        m_tileCombo->setCurrentIndex(bounded);
+    }
+
+    QSettings settings(QDir(AppPaths::dataRoot()).filePath(QStringLiteral("settings.ini")),
+                       QSettings::IniFormat);
+    settings.setValue(QStringLiteral("editor/tileMode"), bounded);
+}
+
+void TextureEditorPage::updateScaleButtons()
+{
+    if (!m_scaleUpButton || !m_scaleDownButton)
+        return;
+
+    const bool valid = m_document.isValid();
+    const int side = m_document.frameSize().width();
+    const int frames = qMax(1, m_document.physicalFrameCount());
+    const bool canGrow = valid && side > 0 && side * 2 <= 4096
+                         && qint64(side) * 2 * side * 2 * frames
+                                <= 64LL * 1024 * 1024;
+    const bool canShrink = valid && side > 1 && side % 2 == 0;
+
+    m_scaleUpButton->setEnabled(canGrow);
+    m_scaleDownButton->setEnabled(canShrink);
+    m_scaleUpButton->setToolTip(
+        canGrow ? tr("放大到 %1 × %1（像素按块复制，可撤销）").arg(side * 2)
+                : tr("当前尺寸无法继续放大"));
+    m_scaleDownButton->setToolTip(
+        canShrink ? tr("缩小到 %1 × %1（会丢像素，可撤销）").arg(side / 2)
+                  : (valid ? tr("当前尺寸不能被 2 整除，无法缩小") : tr("材质未加载")));
+}
+
+void TextureEditorPage::scaleTextureInteractive(int numerator, int denominator)
+{
+    if (!m_document.isValid())
+        return;
+
+    const int side = m_document.frameSize().width();
+    const int target = side * numerator / denominator;
+    const bool growing = numerator > denominator;
+    const QString subject = m_document.animated() ? tr("每一帧") : tr("这张材质");
+
+    const QString question =
+        growing ? tr("把%1从 %2 × %2 放大到 %3 × %3？\n\n"
+                     "像素会按方块复制，不会变模糊；可以用 Ctrl+Z 撤销。")
+                      .arg(subject)
+                      .arg(side)
+                      .arg(target)
+                : tr("把%1从 %2 × %2 缩小到 %3 × %3？\n\n"
+                     "缩小会丢掉像素，只能用撤销找回。")
+                      .arg(subject)
+                      .arg(side)
+                      .arg(target);
+
+    const auto answer = QMessageBox::question(
+        this, growing ? tr("放大尺寸") : tr("缩小尺寸"), question,
+        QMessageBox::Yes | QMessageBox::No,
+        growing ? QMessageBox::Yes : QMessageBox::No);
+    if (answer != QMessageBox::Yes)
+        return;
+
+    QString error;
+    if (!m_document.scaleTexture(numerator, denominator, &error)) {
+        if (!error.isEmpty())
+            QMessageBox::warning(this, tr("无法修改尺寸"), error);
+        return;
+    }
+
+    m_canvas->refresh();
+    m_canvas->fitToView();
+    refreshAnimationEdit();
+    updateScaleButtons();
+}
+
+void TextureEditorPage::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    if (m_layoutApplied)
+        return;
+    QTimer::singleShot(0, this, [this] {
+        if (m_layoutApplied || !m_splitter || m_splitter->width() <= 400)
+            return;
+        m_layoutApplied = true;
+        const int panel = qBound(280, m_savedPanelWidth, 560);
+        const int total = m_splitter->width();
+        m_splitter->setSizes({58, qMax(320, total - 58 - panel), panel});
+    });
+}
+
+void TextureEditorPage::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    if (m_layoutApplied || !m_splitter || !m_sidePanelScroll)
+        return;
+    if (m_splitter->width() <= 400)
+        return;
+
+    m_layoutApplied = true;
+    const int panel = qBound(280, m_savedPanelWidth, 560);
+    const int total = m_splitter->width();
+    m_splitter->setSizes({58, qMax(320, total - 58 - panel), panel});
 }
 
 void TextureEditorPage::changeEvent(QEvent *event)
@@ -1397,7 +2711,10 @@ void TextureEditorPage::changeEvent(QEvent *event)
         m_saveButton->setIcon(
             IconFactory::icon(IconFactory::Glyph::Save, colors.onAccent, 16));
     }
+    if (m_wheel)
+        m_wheel->update();
     updateColorUi();
+    refreshSwatchSelections();
     updateDirtyUi();
 }
 

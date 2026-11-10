@@ -28,6 +28,9 @@ struct TextureBoardEntry {
     QString source;
     bool referenceOnly = false;
     QString referenceLabel;
+    // Collection mode: localized block/item name and namespace-qualified ID.
+    QString displayName;
+    QString displayId;
 };
 
 class TextureTileItem;

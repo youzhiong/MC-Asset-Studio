@@ -14,6 +14,7 @@
 #include <QNativeGestureEvent>
 #include <QPainter>
 #include <QScrollBar>
+#include <QStringList>
 #include <QTimer>
 #include <QWheelEvent>
 #include <QtMath>
@@ -29,6 +30,20 @@ constexpr int kImageGap = 4;
 constexpr int kFramePadding = 6;
 constexpr qreal kTextureInset = 1.0; // room for the status frame outside the pixels
 
+QString textureTooltip(const TextureBoardEntry &entry)
+{
+    QStringList lines;
+    if (!entry.displayName.isEmpty())
+        lines.append(entry.displayName);
+    if (!entry.displayId.isEmpty())
+        lines.append(QStringLiteral("ID：%1").arg(entry.displayId));
+    lines.append(entry.path);
+    lines.append(entry.referenceOnly ? QStringLiteral("参考材质（未导入）")
+                                     : QStringLiteral("资源包材质"));
+    lines.append(QStringLiteral("双击打开材质编辑器"));
+    return lines.join(QLatin1Char('\n'));
+}
+
 } // namespace
 
 class CollectionTextureItem : public QGraphicsItem
@@ -37,10 +52,7 @@ public:
     explicit CollectionTextureItem(TextureBoardEntry entry)
         : m_entry(std::move(entry))
     {
-        setToolTip(m_entry.path
-                   + (m_entry.referenceOnly
-                          ? QStringLiteral("\n参考材质（未导入）")
-                          : QStringLiteral("\n资源包材质")));
+        setToolTip(textureTooltip(m_entry));
         setFlag(QGraphicsItem::ItemIsSelectable, true);
     }
 
@@ -191,15 +203,26 @@ void CollectionCanvas::setGroups(const QVector<CollectionGroupData> &groups)
         QString label;
     };
 
-    const auto makeCell = [&](const TextureBoardEntry &entry) {
+    const auto makeCell = [&](const TextureBoardEntry &entry, bool showName) {
         Cell cell;
         cell.entry = &entry;
         const QImage &image = entry.frames.isEmpty() ? entry.image : entry.frames.first();
         // Collection mode is a 1:1 pixel canvas: a 16x texture occupies 16
         // units, a 32x texture occupies 32 units. No resolution normalization.
-        const int cellWidth = qMax(1, image.width() + int(2 * kTextureInset));
+        const int imageWidth = qMax(1, image.width() + int(2 * kTextureInset));
         const QString fileName = QFileInfo(entry.path).completeBaseName();
-        cell.label = labelMetrics.elidedText(fileName, Qt::ElideMiddle,
+        const QString labelText = showName && !entry.displayName.isEmpty()
+                                      ? entry.displayName
+                                      : fileName;
+        int cellWidth = imageWidth;
+        if (showName && !entry.displayName.isEmpty()) {
+            // Widen the cell just enough for the localized name; the texture
+            // itself is still drawn at its native 1:1 pixel size.
+            const int textWidth = labelMetrics.horizontalAdvance(labelText);
+            cellWidth = qMax(cellWidth, qMin(textWidth + 1, 72));
+        }
+        cell.label = labelMetrics.elidedText(labelText,
+                                             showName ? Qt::ElideRight : Qt::ElideMiddle,
                                              qMax(8, cellWidth - 1));
         cell.width = cellWidth;
         cell.imageHeight = qMax(1, image.height() + int(2 * kTextureInset));
@@ -227,7 +250,7 @@ void CollectionCanvas::setGroups(const QVector<CollectionGroupData> &groups)
         for (const TextureBoardEntry &entry : group.entries) {
             const QImage &image = entry.frames.isEmpty() ? entry.image : entry.frames.first();
             if (!image.isNull())
-                cells.append(makeCell(entry));
+                cells.append(makeCell(entry, group.showEntryNames));
         }
         if (cells.isEmpty())
             continue;
@@ -401,7 +424,8 @@ void CollectionCanvas::setGroups(const QVector<CollectionGroupData> &groups)
             auto *label = new QGraphicsSimpleTextItem(cell.label);
             label->setFont(labelFont);
             label->setBrush(labelColor);
-            label->setToolTip(cell.entry->path);
+            label->setToolTip(textureTooltip(*cell.entry));
+            label->setData(0, cell.entry->path);
             label->setPos(contentX + cell.x,
                           contentY + cell.y + cell.imageHeight + labelGap);
             m_scene->addItem(label);
@@ -510,6 +534,24 @@ void CollectionCanvas::mouseReleaseEvent(QMouseEvent *event)
         return;
     }
     QGraphicsView::mouseReleaseEvent(event);
+}
+
+void CollectionCanvas::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton) {
+        QGraphicsItem *hit = itemAt(event->position().toPoint());
+        QString path;
+        if (auto *texture = dynamic_cast<CollectionTextureItem *>(hit))
+            path = texture->path();
+        else if (hit)
+            path = hit->data(0).toString(); // label below the texture
+        if (!path.isEmpty() && onOpenTexture) {
+            onOpenTexture(path);
+            event->accept();
+            return;
+        }
+    }
+    QGraphicsView::mouseDoubleClickEvent(event);
 }
 
 bool CollectionCanvas::viewportEvent(QEvent *event)

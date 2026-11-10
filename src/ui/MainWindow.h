@@ -43,6 +43,7 @@ class PackEditorPage;
 class ProjectOverviewWidget;
 class TextureBoardPage;
 class TextureEditorPage;
+class TextureEditorWindow;
 } // namespace mcstudio
 
 class MainWindow : public QMainWindow
@@ -58,6 +59,21 @@ public:
     bool importZip(const QString &zipPath, QString *error = nullptr);
     bool openProjectDirectory(const QString &projectDir, QString *error = nullptr);
     bool openTextureEditor(const QString &relativePath);
+    void setTextureEditorReferenceForTesting(const QString &path);
+    void popOutActiveTextureEditorForTesting();
+    void returnActiveTextureEditorForTesting();
+    void setTextureEditorFocusForTesting(bool enabled);
+    void openTemplateDialogForTesting();
+    void openTintDialogForTesting();
+    void openReduceDialogForTesting();
+    void applyBuiltinTintForTesting();
+    void applyHalfMaskForTesting();
+    void applyHalfMaskTintForTesting();
+    void openEquipmentDialogForTesting();
+    void openMergeDialogForTesting();
+    bool generateEquipmentForTesting();
+    bool saveActiveTextureEditorForTesting();
+    QWidget *activeTextureEditorWindowForTesting() const;
     void openPackEditor();
     bool applyPackEditorNamespace(const QString &namespaceId, bool supported);
     bool applyPackEditorCover(const QString &imagePath);
@@ -118,6 +134,14 @@ private:
     void updateEditorActions();
     bool confirmCloseTextureEditors(const QString &context);
     void onTextureEdited(const QString &relativePath);
+    void popOutTextureEditor(const QString &key);
+    void returnTextureEditorToTab(const QString &key);
+    bool requestCloseTextureEditorWindow(const QString &key);
+    void closeAllTextureWindows();
+    void updateTextureWindowTitle(const QString &key);
+    void applyEditorFocusMode(bool enabled);
+    QStringList referenceTexturePaths(bool includeReference) const;
+    QByteArray readReferenceTexture(const QString &path) const;
     bool importReferenceTexture(const QString &path);
     bool importReferenceNamespace(const QString &namespaceId);
     void refreshTextureBoardAfterReferenceImport();
@@ -154,6 +178,7 @@ private:
     void saveProjectSession();
     void updateProjectUi();
     void openDataFolder();
+    void openProjectFolder();
 
     void updateBreadcrumb();
     void showNotImplemented(const QString &feature);
@@ -205,6 +230,10 @@ private:
     QPointer<mcstudio::PackEditorPage> m_packEditorPage;
     QPointer<mcstudio::CollectionWindow> m_collectionWindow;
     QHash<QString, QPointer<mcstudio::TextureEditorPage>> m_textureEditors;
+    QHash<QString, QPointer<mcstudio::TextureEditorWindow>> m_textureWindows;
+    bool m_editorFocusMode = false;
+    bool m_focusSidebarWasVisible = true;
+    bool m_focusInspectorWasVisible = true;
     bool m_shuttingDown = false;
     mcstudio::InspectorPanel *m_inspectorPanel = nullptr;
     QSplitter *m_splitter = nullptr;

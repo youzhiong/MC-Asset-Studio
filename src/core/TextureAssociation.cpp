@@ -35,6 +35,7 @@ struct BuildContext {
 struct ModelResolution {
     QStringList textures;        // textures present in the pack
     QStringList missingTextures; // referenced but absent from the pack
+    QStringList allTextures;     // every resolved path, pack or reference
     bool usedPack = false;
     bool usedReference = false;
 };
@@ -202,6 +203,7 @@ ModelResolution resolveModelTextures(BuildContext &ctx, const QString &modelId,
         if (resolved.isEmpty())
             continue;
         const QString path = textureAssetPath(resolved);
+        result.allTextures.append(path);
         if (!packHasTexture(ctx, path)) {
             if (!result.missingTextures.contains(path))
                 result.missingTextures.append(path);
@@ -363,6 +365,7 @@ AssociationResult TextureAssociation::build(const Project &project, const AssetS
             }
 
             QSet<QString> textures;
+            QStringList allTextures;
             QStringList missingTextures;
             bool modelPack = false;
             bool modelReference = false;
@@ -374,9 +377,26 @@ AssociationResult TextureAssociation::build(const Project &project, const AssetS
                 modelReference = modelReference || resolved.usedReference;
                 for (const QString &texture : resolved.textures)
                     textures.insert(texture);
+                for (const QString &texture : resolved.allTextures)
+                    allTextures.append(texture);
                 for (const QString &texture : resolved.missingTextures) {
                     if (!missingTextures.contains(texture))
                         missingTextures.append(texture);
+                }
+            }
+
+            allTextures.removeDuplicates();
+            allTextures.sort(Qt::CaseInsensitive);
+
+            // Record the display name for every texture the block references,
+            // including reference-only textures the pack does not contain.
+            const QString displayName =
+                groupDisplayName(QStringLiteral("block"), namespaceId, name, zh, en);
+            const QString textureId = QStringLiteral("%1:%2").arg(namespaceId, name);
+            for (const QString &texture : std::as_const(allTextures)) {
+                if (!result.textureNames.contains(texture)) {
+                    result.textureNames.insert(texture, displayName);
+                    result.textureIds.insert(texture, textureId);
                 }
             }
 
@@ -394,8 +414,7 @@ AssociationResult TextureAssociation::build(const Project &project, const AssetS
             group.kind = QStringLiteral("block");
             group.namespaceId = namespaceId;
             group.name = name;
-            group.displayName =
-                groupDisplayName(QStringLiteral("block"), namespaceId, name, zh, en);
+            group.displayName = displayName;
             group.modelSource = resolveModelSource(statePack, stateReference, modelPack,
                                                    modelReference);
             group.textures = textures.values();
@@ -439,6 +458,20 @@ AssociationResult TextureAssociation::build(const Project &project, const AssetS
             const ModelResolution resolved = resolveModelTextures(
                 ctx, QStringLiteral("%1:item/%2").arg(namespaceId, name), visiting,
                 result.missingModels);
+
+            QStringList allTextures = resolved.allTextures;
+            allTextures.removeDuplicates();
+            allTextures.sort(Qt::CaseInsensitive);
+            const QString displayName =
+                groupDisplayName(QStringLiteral("item"), namespaceId, name, zh, en);
+            const QString textureId = QStringLiteral("%1:%2").arg(namespaceId, name);
+            for (const QString &texture : std::as_const(allTextures)) {
+                if (!result.textureNames.contains(texture)) {
+                    result.textureNames.insert(texture, displayName);
+                    result.textureIds.insert(texture, textureId);
+                }
+            }
+
             if (resolved.textures.isEmpty())
                 continue;
 
@@ -453,8 +486,7 @@ AssociationResult TextureAssociation::build(const Project &project, const AssetS
             group.kind = QStringLiteral("item");
             group.namespaceId = namespaceId;
             group.name = name;
-            group.displayName =
-                groupDisplayName(QStringLiteral("item"), namespaceId, name, zh, en);
+            group.displayName = displayName;
             group.modelSource = resolveModelSource(false, false, modelPack, modelReference);
             group.textures = resolved.textures;
             group.missingTextures = resolved.missingTextures;

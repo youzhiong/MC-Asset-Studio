@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QColor>
 #include <QImage>
 #include <QJsonObject>
 #include <QString>
@@ -57,6 +58,32 @@ public:
     void setFrameTime(int entry, int ticks);
     void setFrametime(int ticks);
     void setInterpolate(bool interpolate);
+
+    // Palette helpers. Counts are sorted from most to least used and keep the
+    // alpha channel, so half-transparent shades are listed separately.
+    struct ColorCount {
+        QRgb rgba = 0;
+        int count = 0;
+    };
+    struct PaletteStats {
+        QVector<ColorCount> colors;
+        int transparentPixels = 0;
+        int totalPixels = 0;
+    };
+    PaletteStats paletteStats(bool currentFrameOnly, int entry) const;
+    int countColor(const QColor &target, int tolerance, bool allFrames, int entry) const;
+
+    // Replace every matching pixel in the current frame or every physical frame.
+    // The whole operation is one undo step. Returns false when nothing matched.
+    bool replaceColor(const QColor &target, const QColor &replacement, int tolerance,
+                      bool allFrames, int entry, int *changedPixels = nullptr);
+    // Merge a set of exact RGBA colours into one colour. One undo step.
+    bool mergeColors(const QVector<QRgb> &from, QRgb replacement, bool allFrames,
+                     int entry, int *changedPixels = nullptr);
+
+    // Nearest-neighbour resize of the whole texture (frame side × numerator /
+    // denominator). Animated textures keep square frames and their frame count.
+    bool scaleTexture(int numerator, int denominator, QString *error = nullptr);
 
     // History / dirty state.
     bool dirty() const;

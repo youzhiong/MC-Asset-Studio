@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QHash>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -30,6 +31,12 @@ struct AssociationResult {
     QVector<TextureGroup> groups;
     QStringList missingModels;
     QStringList missingTextures;
+    // Every texture referenced by a blockstate/model (including reference-only
+    // textures that the pack does not contain), mapped to its localized name
+    // and namespace-qualified ID. Collection mode uses these for card labels
+    // and tooltips even when a texture cannot be grouped into the pack.
+    QHash<QString, QString> textureNames;
+    QHash<QString, QString> textureIds;
     int blockGroups = 0;
     int itemGroups = 0;
     int referenceGroups = 0;

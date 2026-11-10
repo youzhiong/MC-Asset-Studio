@@ -37,7 +37,8 @@ NewProjectDialog::NewProjectDialog(QWidget *parent)
     layout->addWidget(title);
 
     auto *hint = new QLabel(
-        tr("创建一个空资源包。软件会生成 pack.mcmeta，并把它放在 data/projects/ 下。"));
+        tr("创建一个空资源包。软件会生成 pack.mcmeta，并把它放在 %1 下。")
+            .arg(QDir::toNativeSeparators(AppPaths::projectsRoot())));
     hint->setObjectName(QStringLiteral("PanelHint"));
     hint->setWordWrap(true);
     layout->addWidget(hint);

@@ -6,8 +6,8 @@
 namespace mcstudio {
 
 // Persistent user choices for the game environment and appearance. Stored in
-// the same data/settings.ini as the rest of the UI state, under [games] /
-// [reference] / [appearance].
+// %LOCALAPPDATA%/MCStudio/settings.ini under [games] / [reference] /
+// [appearance].
 struct GameSettings {
     QStringList roots;        // .minecraft roots managed by the app
     QStringList recentRoots;  // most recently added first

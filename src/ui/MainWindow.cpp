@@ -12,6 +12,7 @@
 #include "core/ProjectService.h"
 #include "core/Version.h"
 #include "core/ZipImporter.h"
+#include "core/ZipArchive.h"
 #include "ui/CollectionWindow.h"
 #include "ui/DocumentArea.h"
 #include "ui/ImageDocumentWidget.h"
@@ -25,6 +26,7 @@
 #include "ui/TextureBoardPage.h"
 #include "ui/TextDocumentWidget.h"
 #include "ui/TextureEditorPage.h"
+#include "ui/TextureEditorWindow.h"
 #include "ui/Theme.h"
 #include "core/TextureCategory.h"
 
@@ -77,6 +79,7 @@
 #include <QTabBar>
 #include <QTextStream>
 #include <QThread>
+#include <QThreadPool>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
@@ -97,8 +100,7 @@ QFrame *makeDivider()
 
 QSettings appSettings()
 {
-    return QSettings(QDir(mcstudio::AppPaths::dataRoot()).filePath(QStringLiteral("settings.ini")),
-                     QSettings::IniFormat);
+    return QSettings(mcstudio::settingsFilePath(), QSettings::IniFormat);
 }
 
 QStringList recentProjectList()
@@ -272,6 +274,22 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
     m_shuttingDown = true;
+    // The collection window is parentless. Destroy it before this window's
+    // members go away; its scene can emit selectionChanged during teardown and
+    // would otherwise call back into a partially destroyed MainWindow.
+    if (m_collectionWindow) {
+        m_collectionWindow->onTextureSelected = {};
+        m_collectionWindow->onOpenTexture = {};
+        delete m_collectionWindow;
+        m_collectionWindow = nullptr;
+    }
+    // Background association/catalog workers use Qt objects; wait for them so
+    // closing the window cannot tear down Qt while a worker is still running.
+    if (m_modTask)
+        m_modTask->cancel();
+    if (m_associationTask)
+        m_associationTask->cancel();
+    QThreadPool::globalInstance()->waitForDone();
     saveProjectSession();
 }
 
@@ -291,6 +309,15 @@ void MainWindow::closeEvent(QCloseEvent *event)
             return;
         }
     }
+    if (m_collectionWindow) {
+        // The collection window is an independent top-level window now; close
+        // it explicitly so quitting the main window never leaves an orphan.
+        m_collectionWindow->close();
+        m_collectionWindow = nullptr;
+    }
+    closeAllTextureWindows();
+    if (m_editorFocusMode)
+        applyEditorFocusMode(false);
     saveProjectSession();
     saveWindowState();
     QMainWindow::closeEvent(event);
@@ -796,7 +823,8 @@ QWidget *MainWindow::createCenter()
 
     auto *text = new QLabel(
         tr("新建空白资源包、打开已有项目，或导入 ZIP / 资源包文件夹。\n"
-           "项目会复制到软件目录的 data/ 下，原 ZIP 和原文件夹保持不变。"));
+           "项目会复制到 %1，原 ZIP 和原文件夹保持不变。")
+            .arg(QDir::toNativeSeparators(mcstudio::AppPaths::projectsRoot())));
     text->setObjectName(QStringLiteral("EmptyText"));
     text->setWordWrap(true);
     text->setAlignment(Qt::AlignCenter);
@@ -840,7 +868,7 @@ QWidget *MainWindow::createCenter()
     emptyLayout->addSpacing(14);
     emptyLayout->addLayout(chipRow);
 
-    auto *hint = new QLabel(tr("Windows 10/11 · Java Edition 1.20.1 · 缓存位于 data/"));
+    auto *hint = new QLabel(tr("Windows 10/11 · Java Edition 1.20.1 · 设置和缓存位于 AppData"));
     hint->setObjectName(QStringLiteral("PanelHint"));
     hint->setAlignment(Qt::AlignCenter);
     emptyLayout->addWidget(hint);
@@ -1223,7 +1251,7 @@ bool MainWindow::importZip(const QString &zipPath, QString *error)
     QCoreApplication::processEvents();
 
     const mcstudio::ImportResult result = mcstudio::ZipImporter::import(
-        zipPath, mcstudio::AppPaths::dataRoot(),
+        zipPath, mcstudio::AppPaths::projectsRoot(), mcstudio::AppPaths::cacheRoot(),
         [&progress](int done, int total, const QString &message) {
             const int maximum = qMax(1, total);
             progress.setMaximum(maximum);
@@ -1316,6 +1344,7 @@ bool MainWindow::openProject(const QString &projectDir, QString *error)
     m_documentArea->closeAllDocuments();
     m_documentArea->beforeClose = beforeClose;
     m_documentArea->setBrowserVisible(false);
+    closeAllTextureWindows();
     m_textureEditors.clear();
     m_exportAction->setEnabled(true);
     m_overwriteAction->setEnabled(!m_project.sourceZip.isEmpty());
@@ -1391,7 +1420,7 @@ void MainWindow::openOverviewTab()
     auto *overview = new mcstudio::ProjectOverviewWidget(m_project);
     overview->onExportNew = [this] { exportProjectDialog(false); };
     overview->onOverwrite = [this] { exportProjectDialog(true); };
-    overview->onOpenFolder = [this] { openDataFolder(); };
+    overview->onOpenFolder = [this] { openProjectFolder(); };
     overview->onOpenPackEditor = [this] { openPackEditorTab(); };
     overview->onPackMetaSaved = [this](int format, const QVector<int> &supported,
                                        const QString &description) {
@@ -1528,6 +1557,7 @@ void MainWindow::clearProject()
     m_categoryCountsAll.clear();
     m_categoryCountsByNamespace.clear();
     m_packEditorPage = nullptr;
+    closeAllTextureWindows();
     m_textureEditors.clear();
 
     m_hasProject = false;
@@ -1901,6 +1931,18 @@ void MainWindow::refreshTextureBoardAfterReferenceImport()
     updateCategoryCounts();
     if (m_textureBoardPage)
         m_textureBoardPage->refreshPackEntries(m_project);
+    if (m_collectionWindow && m_textureBoardPage) {
+        m_collectionWindow->setEntries(m_textureBoardPage->entriesWithReferences());
+        m_collectionWindow->setReferenceContext(m_assetStack, m_modCatalog,
+                                                m_projectNamespaces);
+    }
+    // The pack changed, so the block/texture association and its cached names
+    // are stale. Rebuild them now instead of leaving the collection window on
+    // an empty 0-group list. If the mod catalog is still scanning, that task
+    // will rebuild the stack and start the association itself; starting a
+    // second association against a stack without mod jars would race it.
+    if (!(m_modTask && m_modTask->isRunning()))
+        QTimer::singleShot(0, this, [this] { startAssociationBuild(); });
     if (!m_selectedTexturePath.isEmpty())
         showTextureInInspector(m_selectedTexturePath);
 }
@@ -1942,18 +1984,32 @@ void MainWindow::openCollectionWindow()
         return;
 
     if (m_collectionWindow) {
+        if (m_collectionWindow->isMinimized())
+            m_collectionWindow->showNormal();
         m_collectionWindow->raise();
         m_collectionWindow->activateWindow();
         return;
     }
 
     QApplication::setOverrideCursor(Qt::WaitCursor);
+    // No parent: an owned window is excluded from the Windows taskbar. The
+    // collection window must behave like a normal top-level application window.
     auto *window = new mcstudio::CollectionWindow(
         m_project, m_textureBoardPage->entriesWithReferences(),
-        m_textureBoardPage->categoryFilter(), this);
+        m_textureBoardPage->categoryFilter(), nullptr);
     window->setWindowFlag(Qt::Window, true);
     window->onTextureSelected = [this](const QString &path) {
         showTextureInInspector(path);
+    };
+    window->onOpenTexture = [this](const QString &path) {
+        if (!openTextureEditor(path))
+            return;
+        // The collection window is an independent top-level window, so the
+        // editor tab in the main window may otherwise stay behind it.
+        if (isMinimized())
+            showNormal();
+        raise();
+        activateWindow();
     };
     window->setReferenceContext(m_assetStack, m_modCatalog, m_projectNamespaces);
     if (m_association)
@@ -1963,6 +2019,8 @@ void MainWindow::openCollectionWindow()
                                                            : currentModLabel());
     QApplication::restoreOverrideCursor();
     window->show();
+    window->raise();
+    window->activateWindow();
     m_collectionWindow = window;
 }
 
@@ -2812,6 +2870,11 @@ void MainWindow::openFileTab(const QString &relativePath)
 
 mcstudio::TextureEditorPage *MainWindow::activeTextureEditor() const
 {
+    for (auto it = m_textureWindows.constBegin(); it != m_textureWindows.constEnd(); ++it) {
+        if (it.value() && it.value()->isActiveWindow() && it.value()->page())
+            return it.value()->page();
+    }
+
     if (!m_documentArea)
         return nullptr;
     const QString key = m_documentArea->currentDocumentKey();
@@ -2906,7 +2969,13 @@ bool MainWindow::openTextureEditor(const QString &relativePath)
 
     const QString key = QStringLiteral("edit:") + path;
     if (auto existing = m_textureEditors.value(key)) {
-        m_documentArea->activateDocument(key);
+        if (auto window = m_textureWindows.value(key)) {
+            window->show();
+            window->raise();
+            window->activateWindow();
+        } else {
+            m_documentArea->activateDocument(key);
+        }
         existing->focusCanvas();
         return true;
     }
@@ -2916,15 +2985,31 @@ bool MainWindow::openTextureEditor(const QString &relativePath)
 
     page->onSaved = [this, path] { onTextureEdited(path); };
     page->onDirtyChanged = [this, key, page](bool dirty) {
-        if (!m_documentArea)
-            return;
-        QString title = QFileInfo(page->relativePath()).fileName();
-        if (dirty)
-            title += QStringLiteral(" *");
-        m_documentArea->setDocumentTitle(key, title);
+        if (m_documentArea && m_documentArea->hasDocument(key)) {
+            QString title = QFileInfo(page->relativePath()).fileName();
+            if (dirty)
+                title += QStringLiteral(" *");
+            m_documentArea->setDocumentTitle(key, title);
+        }
+        updateTextureWindowTitle(key);
         updateEditorActions();
     };
     page->onHistoryChanged = [this] { updateEditorActions(); };
+    page->onPopOut = [this, key] { popOutTextureEditor(key); };
+    page->onReturnToTab = [this, key] { returnTextureEditorToTab(key); };
+    page->onFocusModeChanged = [this](bool enabled) {
+        applyEditorFocusMode(enabled);
+    };
+    page->onFilesGenerated = [this](const QStringList &paths) {
+        for (const QString &generated : paths)
+            onTextureEdited(generated);
+    };
+    page->referencePathProvider = [this](bool includeReference) {
+        return referenceTexturePaths(includeReference);
+    };
+    page->referenceBytesProvider = [this](const QString &referencePath) {
+        return readReferenceTexture(referencePath);
+    };
 
     QObject::connect(page, &QObject::destroyed, this, [this, key] {
         if (m_shuttingDown)
@@ -2944,8 +3029,337 @@ bool MainWindow::openTextureEditor(const QString &relativePath)
     return true;
 }
 
-void MainWindow::onTextureEdited(const QString &relativePath)
+void MainWindow::setTextureEditorReferenceForTesting(const QString &path)
 {
+    auto *editor = activeTextureEditor();
+    if (!editor)
+        return;
+    const QByteArray bytes = readReferenceTexture(path);
+    const QImage image = QImage::fromData(bytes);
+    if (!image.isNull())
+        editor->setReferenceImage(image, QFileInfo(path).fileName());
+}
+
+void MainWindow::popOutActiveTextureEditorForTesting()
+{
+    auto *editor = activeTextureEditor();
+    if (!editor)
+        return;
+    for (auto it = m_textureEditors.constBegin(); it != m_textureEditors.constEnd(); ++it) {
+        if (it.value() == editor) {
+            popOutTextureEditor(it.key());
+            return;
+        }
+    }
+}
+
+void MainWindow::returnActiveTextureEditorForTesting()
+{
+    QString targetKey;
+    auto *editor = activeTextureEditor();
+    if (editor) {
+        for (auto it = m_textureEditors.constBegin(); it != m_textureEditors.constEnd(); ++it) {
+            if (it.value() == editor) {
+                targetKey = it.key();
+                break;
+            }
+        }
+    }
+    if (targetKey.isEmpty() && !m_textureWindows.isEmpty())
+        targetKey = m_textureWindows.constBegin().key();
+    if (!targetKey.isEmpty())
+        returnTextureEditorToTab(targetKey);
+}
+
+void MainWindow::setTextureEditorFocusForTesting(bool enabled)
+{
+    applyEditorFocusMode(enabled);
+    if (auto *editor = activeTextureEditor())
+        editor->setFocusMode(enabled);
+}
+
+void MainWindow::applyHalfMaskTintForTesting()
+{
+    if (auto *editor = activeTextureEditor())
+        editor->applyHalfMaskTintForTesting();
+}
+
+void MainWindow::applyHalfMaskForTesting()
+{
+    if (auto *editor = activeTextureEditor())
+        editor->applyHalfMaskForTesting();
+}
+
+void MainWindow::openMergeDialogForTesting()
+{
+    if (auto *editor = activeTextureEditor())
+        editor->showMergeDialogForTesting();
+}
+
+bool MainWindow::generateEquipmentForTesting()
+{
+    if (auto *editor = activeTextureEditor())
+        return editor->generateBuiltinEquipmentForTesting();
+    return false;
+}
+
+void MainWindow::openEquipmentDialogForTesting()
+{
+    if (auto *editor = activeTextureEditor())
+        editor->showEquipmentDialogForTesting();
+}
+
+void MainWindow::openTemplateDialogForTesting()
+{
+    if (auto *editor = activeTextureEditor())
+        editor->showTemplateDialogForTesting();
+}
+
+void MainWindow::openTintDialogForTesting()
+{
+    if (auto *editor = activeTextureEditor())
+        editor->showTintDialogForTesting();
+}
+
+void MainWindow::openReduceDialogForTesting()
+{
+    if (auto *editor = activeTextureEditor())
+        editor->showReduceDialogForTesting();
+}
+
+void MainWindow::applyBuiltinTintForTesting()
+{
+    if (auto *editor = activeTextureEditor())
+        editor->applyBuiltinTestTint();
+}
+
+bool MainWindow::saveActiveTextureEditorForTesting()
+{
+    if (auto *editor = activeTextureEditor())
+        return editor->saveDocument();
+    return false;
+}
+
+QWidget *MainWindow::activeTextureEditorWindowForTesting() const
+{
+    if (auto *editor = activeTextureEditor())
+        return editor->window();
+    for (auto it = m_textureEditors.constBegin(); it != m_textureEditors.constEnd(); ++it) {
+        if (it.value())
+            return it.value()->window();
+    }
+    return nullptr;
+}
+
+void MainWindow::popOutTextureEditor(const QString &key)
+{
+    auto page = m_textureEditors.value(key);
+    if (!page)
+        return;
+    if (auto existing = m_textureWindows.value(key)) {
+        existing->show();
+        existing->raise();
+        existing->activateWindow();
+        return;
+    }
+
+    QWidget *content = m_documentArea ? m_documentArea->takeDocument(key) : nullptr;
+    if (!content)
+        return;
+
+    auto *window = new mcstudio::TextureEditorWindow(page, nullptr);
+    window->onCloseRequested = [this, key] {
+        return requestCloseTextureEditorWindow(key);
+    };
+    m_textureWindows.insert(key, window);
+    page->setWindowed(true);
+
+    QSettings settings = appSettings();
+    const QByteArray geometry =
+        settings.value(QStringLiteral("window/editorGeometry")).toByteArray();
+    if (!geometry.isEmpty())
+        window->restoreGeometry(geometry);
+
+    window->show();
+    window->raise();
+    window->activateWindow();
+    page->show();
+    page->focusCanvas();
+    updateEditorActions();
+}
+
+void MainWindow::returnTextureEditorToTab(const QString &key)
+{
+    auto page = m_textureEditors.value(key);
+    auto window = m_textureWindows.take(key);
+    if (!page) {
+        if (window)
+            window->deleteLater();
+        return;
+    }
+
+    if (window) {
+        QSettings settings = appSettings();
+        settings.setValue(QStringLiteral("window/editorGeometry"),
+                          window->saveGeometry());
+        window->setAllowClose(true);
+    }
+
+    page->setParent(nullptr);
+    m_documentArea->openDocument(
+        key, QFileInfo(page->relativePath()).fileName(),
+        IconFactory::icon(IconFactory::Glyph::Image, Theme::colors().accent, 16),
+        page, page->relativePath());
+    page->setWindowed(false);
+    m_documentArea->activateDocument(key);
+    page->show();
+
+    if (window) {
+        window->hide();
+        window->deleteLater();
+    }
+    page->focusCanvas();
+    updateEditorActions();
+}
+
+bool MainWindow::requestCloseTextureEditorWindow(const QString &key)
+{
+    auto page = m_textureEditors.value(key);
+    if (!page)
+        return true;
+
+    if (page->isDirty()) {
+        const auto answer = QMessageBox::warning(
+            this, tr("未保存的材质"),
+            tr("“%1”有未保存的修改。").arg(page->relativePath()),
+            QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+            QMessageBox::Save);
+        if (answer == QMessageBox::Cancel)
+            return false;
+        if (answer == QMessageBox::Save && !page->saveDocument())
+            return false;
+    }
+
+    auto window = m_textureWindows.take(key);
+    if (window) {
+        QSettings settings = appSettings();
+        settings.setValue(QStringLiteral("window/editorGeometry"),
+                          window->saveGeometry());
+        window->setAllowClose(true);
+        window->hide();
+        window->deleteLater();
+    }
+    m_textureEditors.remove(key);
+    updateEditorActions();
+    return false;
+}
+
+void MainWindow::closeAllTextureWindows()
+{
+    const QStringList keys = m_textureWindows.keys();
+    for (const QString &key : keys) {
+        auto window = m_textureWindows.take(key);
+        if (!window)
+            continue;
+        QSettings settings = appSettings();
+        settings.setValue(QStringLiteral("window/editorGeometry"),
+                          window->saveGeometry());
+        window->setAllowClose(true);
+        window->hide();
+        window->deleteLater();
+        m_textureEditors.remove(key);
+    }
+}
+
+void MainWindow::updateTextureWindowTitle(const QString &key)
+{
+    auto window = m_textureWindows.value(key);
+    auto page = m_textureEditors.value(key);
+    if (!window || !page)
+        return;
+
+    QString title = tr("材质编辑 — %1").arg(QFileInfo(page->relativePath()).fileName());
+    if (page->isDirty())
+        title += QStringLiteral(" *");
+    window->setWindowTitle(title);
+}
+
+void MainWindow::applyEditorFocusMode(bool enabled)
+{
+    if (m_editorFocusMode == enabled)
+        return;
+    m_editorFocusMode = enabled;
+    if (!m_toggleSidebarAction || !m_toggleInspectorAction)
+        return;
+
+    if (enabled) {
+        m_focusSidebarWasVisible = m_toggleSidebarAction->isChecked();
+        m_focusInspectorWasVisible = m_toggleInspectorAction->isChecked();
+        m_toggleSidebarAction->setChecked(false);
+        m_toggleInspectorAction->setChecked(false);
+    } else {
+        m_toggleSidebarAction->setChecked(m_focusSidebarWasVisible);
+        m_toggleInspectorAction->setChecked(m_focusInspectorWasVisible);
+    }
+}
+
+QStringList MainWindow::referenceTexturePaths(bool includeReference) const
+{
+    QSet<QString> unique;
+    if (m_hasProject) {
+        const auto &index = m_project.fileIndex();
+        for (auto it = index.constBegin(); it != index.constEnd(); ++it) {
+            if (it.value().isTexture
+                && it.key().endsWith(QLatin1String(".png"), Qt::CaseInsensitive)) {
+                unique.insert(it.key());
+            }
+        }
+    }
+    if (includeReference && m_assetStack) {
+        const QStringList paths = m_assetStack->list(QStringLiteral("assets/"));
+        for (const QString &path : paths) {
+            if (path.endsWith(QLatin1String(".png"), Qt::CaseInsensitive))
+                unique.insert(path);
+        }
+    }
+
+    QStringList result;
+    result.reserve(unique.size());
+    for (const QString &path : unique)
+        result.append(path);
+    result.sort(Qt::CaseInsensitive);
+    return result;
+}
+
+QByteArray MainWindow::readReferenceTexture(const QString &path) const
+{
+    if (m_project.exists(path))
+        return m_project.readBytes(path);
+    if (m_assetStack) {
+        const QByteArray bytes = m_assetStack->read(path);
+        if (!bytes.isEmpty())
+            return bytes;
+    }
+    // Fallback for the default template import: if no reference instance is
+    // selected, read vanilla assets straight from any scanned client jar.
+    if (path.startsWith(QLatin1String("assets/minecraft/"))) {
+        for (const mcstudio::GameRootInfo &root : m_environment.roots) {
+            for (const mcstudio::InstanceInfo &instance : root.instances) {
+                if (!instance.hasClientJar || instance.clientJar.isEmpty())
+                    continue;
+                mcstudio::ZipArchive jar(instance.clientJar);
+                if (!jar.isOpen())
+                    continue;
+                const QByteArray bytes = jar.read(path);
+                if (!bytes.isEmpty())
+                    return bytes;
+            }
+        }
+    }
+    return {};
+}
+
+void MainWindow::onTextureEdited(const QString &relativePath){
     if (!m_hasProject)
         return;
 
@@ -3025,6 +3439,15 @@ void MainWindow::openDataFolder()
 {
     QDesktopServices::openUrl(
         QUrl::fromLocalFile(mcstudio::AppPaths::dataRoot()));
+}
+
+void MainWindow::openProjectFolder()
+{
+    if (m_hasProject && !m_project.rootDir.isEmpty()) {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(m_project.rootDir));
+        return;
+    }
+    openDataFolder();
 }
 
 void MainWindow::activateTab(const QString &key)

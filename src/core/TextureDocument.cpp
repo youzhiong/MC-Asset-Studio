@@ -1,14 +1,17 @@
 #include "core/TextureDocument.h"
 
+#include "core/PixelEdit.h"
 #include "core/Project.h"
 
 #include <QBuffer>
 #include <QDir>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QPainter>
+#include <QSet>
 
 #include <algorithm>
 
@@ -24,6 +27,16 @@ QString normalizedRelative(const QString &path)
     while (result.startsWith(QLatin1Char('/')))
         result.remove(0, 1);
     return result;
+}
+
+bool colorMatches(QRgb a, QRgb b, int tolerance)
+{
+    if (tolerance <= 0)
+        return a == b;
+    return qAbs(qRed(a) - qRed(b)) <= tolerance
+           && qAbs(qGreen(a) - qGreen(b)) <= tolerance
+           && qAbs(qBlue(a) - qBlue(b)) <= tolerance
+           && qAbs(qAlpha(a) - qAlpha(b)) <= tolerance;
 }
 
 } // namespace
@@ -384,6 +397,214 @@ void TextureDocument::setInterpolate(bool interpolate)
         return;
     m_interpolate = interpolate;
     commitEdit();
+}
+
+TextureDocument::PaletteStats TextureDocument::paletteStats(bool currentFrameOnly,
+                                                             int entry) const
+{
+    PaletteStats stats;
+    QHash<QRgb, int> counts;
+    counts.reserve(64);
+
+    const auto addImage = [&](const QImage &image) {
+        if (image.isNull())
+            return;
+        const int width = image.width();
+        for (int y = 0; y < image.height(); ++y) {
+            const QRgb *row = reinterpret_cast<const QRgb *>(image.constScanLine(y));
+            for (int x = 0; x < width; ++x) {
+                const QRgb rgba = row[x];
+                ++stats.totalPixels;
+                if (qAlpha(rgba) == 0) {
+                    ++stats.transparentPixels;
+                    continue;
+                }
+                ++counts[rgba];
+            }
+        }
+    };
+
+    if (currentFrameOnly) {
+        addImage(frame(entry));
+    } else {
+        for (const QImage &image : m_frames)
+            addImage(image);
+    }
+
+    stats.colors.reserve(counts.size());
+    for (auto it = counts.constBegin(); it != counts.constEnd(); ++it) {
+        ColorCount item;
+        item.rgba = it.key();
+        item.count = it.value();
+        stats.colors.append(item);
+    }
+    std::sort(stats.colors.begin(), stats.colors.end(),
+              [](const ColorCount &a, const ColorCount &b) {
+                  if (a.count != b.count)
+                      return a.count > b.count;
+                  return a.rgba < b.rgba;
+              });
+    return stats;
+}
+
+int TextureDocument::countColor(const QColor &target, int tolerance, bool allFrames,
+                                int entry) const
+{
+    if (!m_valid || !target.isValid())
+        return 0;
+
+    const QRgb wanted = target.rgba();
+    const int tol = qBound(0, tolerance, 255);
+    int total = 0;
+
+    const auto countImage = [&](const QImage &image) {
+        if (image.isNull())
+            return;
+        total += [&] {
+            int matched = 0;
+            for (int y = 0; y < image.height(); ++y) {
+                const QRgb *row = reinterpret_cast<const QRgb *>(image.constScanLine(y));
+                for (int x = 0; x < image.width(); ++x) {
+                    if (colorMatches(row[x], wanted, tol))
+                        ++matched;
+                }
+            }
+            return matched;
+        }();
+    };
+
+    if (allFrames) {
+        for (const QImage &image : m_frames)
+            countImage(image);
+    } else {
+        countImage(frame(entry));
+    }
+    return total;
+}
+
+bool TextureDocument::replaceColor(const QColor &target, const QColor &replacement,
+                                   int tolerance, bool allFrames, int entry,
+                                   int *changedPixels)
+{
+    if (!m_valid || m_frames.isEmpty() || !target.isValid() || !replacement.isValid())
+        return false;
+
+    int changed = 0;
+    const auto replaceImage = [&](QImage &image) {
+        changed += PixelEdit::replaceColor(image, target, replacement, tolerance);
+    };
+
+    if (allFrames) {
+        for (QImage &image : m_frames)
+            replaceImage(image);
+    } else {
+        const int entryIndex = qBound(0, entry, qMax(0, m_playback.size() - 1));
+        const int physical = m_playback.value(entryIndex, 0);
+        if (physical >= 0 && physical < m_frames.size())
+            replaceImage(m_frames[physical]);
+    }
+
+    if (changed <= 0)
+        return false;
+
+    commitEdit();
+    if (changedPixels)
+        *changedPixels = changed;
+    return true;
+}
+
+bool TextureDocument::mergeColors(const QVector<QRgb> &from, QRgb replacement,
+                                  bool allFrames, int entry, int *changedPixels)
+{
+    if (!m_valid || m_frames.isEmpty() || from.isEmpty())
+        return false;
+
+    QSet<QRgb> sources;
+    for (QRgb color : from)
+        sources.insert(color);
+    sources.remove(replacement);
+    if (sources.isEmpty())
+        return false;
+
+    int changed = 0;
+    const auto mergeImage = [&](QImage &image) {
+        if (image.format() != QImage::Format_ARGB32)
+            image = image.convertToFormat(QImage::Format_ARGB32);
+        for (int y = 0; y < image.height(); ++y) {
+            QRgb *row = reinterpret_cast<QRgb *>(image.scanLine(y));
+            for (int x = 0; x < image.width(); ++x) {
+                if (sources.contains(row[x])) {
+                    row[x] = replacement;
+                    ++changed;
+                }
+            }
+        }
+    };
+
+    if (allFrames) {
+        for (QImage &image : m_frames)
+            mergeImage(image);
+    } else {
+        const int entryIndex = qBound(0, entry, qMax(0, m_playback.size() - 1));
+        const int physical = m_playback.value(entryIndex, 0);
+        if (physical >= 0 && physical < m_frames.size())
+            mergeImage(m_frames[physical]);
+    }
+
+    if (changed <= 0)
+        return false;
+
+    commitEdit();
+    if (changedPixels)
+        *changedPixels = changed;
+    return true;
+}
+
+bool TextureDocument::scaleTexture(int numerator, int denominator, QString *error)
+{
+    const auto fail = [error](const QString &message) {
+        if (error)
+            *error = message;
+        return false;
+    };
+
+    if (!m_valid || m_frames.isEmpty())
+        return fail(QStringLiteral("材质尚未加载。"));
+    if (numerator <= 0 || denominator <= 0)
+        return fail(QStringLiteral("缩放比例无效。"));
+
+    const QSize size = frameSize();
+    if (size.isEmpty())
+        return fail(QStringLiteral("材质尺寸无效。"));
+
+    const qint64 scaledWidth = qint64(size.width()) * numerator;
+    if (scaledWidth % denominator != 0)
+        return fail(QStringLiteral("当前尺寸 %1×%2 无法按这个比例整除。")
+                        .arg(size.width())
+                        .arg(size.height()));
+
+    const int newSide = int(scaledWidth / denominator);
+    if (newSide < 1)
+        return fail(QStringLiteral("缩放后的尺寸太小。"));
+    if (newSide > 4096)
+        return fail(QStringLiteral("缩放后的尺寸 %1 超过 4096 像素上限。").arg(newSide));
+
+    const qint64 totalPixels = qint64(newSide) * newSide * m_frames.size();
+    if (totalPixels > 64LL * 1024 * 1024) {
+        return fail(QStringLiteral("缩放后的总像素太多（%1 帧 × %2×%2），"
+                                   "为了不卡住编辑器，单次最多 6400 万像素。")
+                        .arg(m_frames.size())
+                        .arg(newSide));
+    }
+    if (newSide == size.width())
+        return fail(QStringLiteral("尺寸没有变化。"));
+
+    for (QImage &image : m_frames) {
+        image = image.scaled(newSide, newSide, Qt::IgnoreAspectRatio,
+                             Qt::FastTransformation);
+    }
+    commitEdit();
+    return true;
 }
 
 bool TextureDocument::save(const Project &project, QString *error)

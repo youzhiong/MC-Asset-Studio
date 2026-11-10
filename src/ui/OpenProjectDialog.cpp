@@ -57,8 +57,9 @@ OpenProjectDialog::OpenProjectDialog(QWidget *parent)
     layout->addWidget(title);
 
     auto *hint = new QLabel(
-        tr("列出 data/projects 下已创建或导入的项目。也可以浏览任意包含 project.json "
-           "或 pack.mcmeta 的文件夹。"));
+        tr("列出 %1 下已创建或导入的项目。也可以浏览任意包含 project.json "
+           "或 pack.mcmeta 的文件夹。")
+            .arg(QDir::toNativeSeparators(AppPaths::projectsRoot())));
     hint->setObjectName(QStringLiteral("PanelHint"));
     hint->setWordWrap(true);
     layout->addWidget(hint);

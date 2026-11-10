@@ -9,6 +9,8 @@ qt_add_library(mcstudio_core STATIC
     AssetProvider.h
     AssetStack.cpp
     AssetStack.h
+    ColorReducer.cpp
+    ColorReducer.h
     AssociationCache.cpp
     AssociationCache.h
     AssociationTask.cpp
@@ -33,6 +35,8 @@ qt_add_library(mcstudio_core STATIC
     ModScanner.h
     PackFormat.cpp
     PackFormat.h
+    PaletteStore.cpp
+    PaletteStore.h
     PathUtils.h
     PixelEdit.cpp
     PixelEdit.h
@@ -48,6 +52,10 @@ qt_add_library(mcstudio_core STATIC
     TextureCategory.h
     TextureDocument.cpp
     TextureDocument.h
+    TemplateLibrary.cpp
+    TemplateLibrary.h
+    TintRecipe.cpp
+    TintRecipe.h
     Version.cpp
     Version.h
     ZipArchive.cpp

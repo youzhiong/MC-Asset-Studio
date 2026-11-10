@@ -23,6 +23,9 @@ public:
     int addFixedDocument(const QString &key, const QString &title, const QIcon &icon,
                          QWidget *content, const QString &path = {});
     void removeDocument(const QString &key);
+    // Removes the tab but keeps the page alive (used by the pop-out editor
+    // window). Returns nullptr when the key is not an open document.
+    QWidget *takeDocument(const QString &key);
     void setDocumentTitle(const QString &key, const QString &title);
     bool isFixedDocument(const QString &key) const;
     bool hasDocument(const QString &key) const;

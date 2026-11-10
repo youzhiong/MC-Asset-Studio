@@ -32,7 +32,7 @@ void drawEllipse(QImage &image, const QRect &rect, const QColor &color, int brus
 
 void floodFill(QImage &image, const QPoint &start, const QColor &color, bool contiguous,
                int tolerance);
-void replaceColor(QImage &image, const QColor &target, const QColor &color, int tolerance);
+int replaceColor(QImage &image, const QColor &target, const QColor &color, int tolerance);
 
 QVector<QPoint> mirrorPoints(const QPoint &point, const QSize &size, Symmetry symmetry);
 QRect mirrorRect(const QRect &rect, const QSize &size, Symmetry symmetry);

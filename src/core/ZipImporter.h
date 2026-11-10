@@ -26,7 +26,8 @@ class ZipImporter
 public:
     using Progress = std::function<void(int done, int total, const QString &message)>;
 
-    static ImportResult import(const QString &zipPath, const QString &dataRoot,
+    static ImportResult import(const QString &zipPath, const QString &projectsRoot,
+                               const QString &cacheRoot,
                                const Progress &progress = {});
 };
 

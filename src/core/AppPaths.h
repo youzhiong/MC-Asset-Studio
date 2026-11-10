@@ -6,6 +6,9 @@ namespace mcstudio {
 namespace AppPaths {
 
 QString appDir();
+
+// Settings and regenerable caches live under %LOCALAPPDATA%\MCStudio on
+// Windows. User projects are kept in Documents\MC Asset Studio instead.
 QString dataRoot();
 QString projectsRoot();
 QString cacheRoot();
@@ -26,6 +29,11 @@ QString gameNamespacesRoot();
 QString gameScansRoot();
 
 bool ensureDataDirs(QString *error = nullptr);
+
+// One-time copy of the old portable data/ folder (settings, game/mod cache,
+// projects) into the new AppData and Documents locations. The old folder is
+// left untouched. Returns a human-readable summary; empty when nothing ran.
+QString migrateLegacyData();
 
 } // namespace AppPaths
 } // namespace mcstudio
